@@ -228,6 +228,10 @@ class Scheduler:
         if key in self._following:
             self._advance_following(key, value, success, now)
 
+    def keys(self) -> list[str]:
+        """Every key it schedules."""
+        return list(self._points)
+
     def consecutive_failures(self, key: str) -> int:
         """How many reads of `key` in a row have failed."""
         self._require(key)

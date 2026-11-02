@@ -42,6 +42,7 @@ from ._reachability import Reachability
 from ._resilience import (
     NO_RETRY,
     AnyOf,
+    Attempt,
     Attempts,
     Breaker,
     CircuitBreaker,
@@ -55,7 +56,7 @@ from ._resilience import (
     Within,
 )
 from ._scheduler import Scheduler
-from ._status import Status, StatusCallback
+from ._status import Status, StatusBoard, StatusCallback
 from ._timing import DEFAULT_TIMING, Timing
 from ._unit import Unit
 from ._value import DataValue, Quality, Value, stale
@@ -68,6 +69,7 @@ __all__ = [
     "NO_RETRY",
     "VALUE_TYPES",
     "AnyOf",
+    "Attempt",
     "Attempts",
     "AuthenticationError",
     "Breaker",
@@ -98,6 +100,7 @@ __all__ = [
     "Scheduler",
     "Selector",
     "Status",
+    "StatusBoard",
     "StatusCallback",
     "Steps",
     "Stop",

@@ -230,6 +230,12 @@ class Breaker:
         """Seconds until a probe may go; 0 while closed or once one may."""
         return 0.0 if self._open_until is None else max(0.0, self._open_until - now)
 
+    def attempt(self, now: float) -> Attempt | None:
+        """One request, if it may be sent now; None if not. Used as a context manager, it
+        releases a probe whose outcome it was never told, as when the request was cancelled."""
+        probe = self.is_open
+        return Attempt(self, probe) if self.allows(now) else None
+
     def allows(self, now: float) -> bool:
         """Whether a request may be sent now: always while closed; once the pause is over, one
         probe, and nothing more until its outcome is told."""
@@ -261,3 +267,29 @@ class Breaker:
             self._openings += 1
             self.opened += 1
             self._open_until = now + self._settings.pause.delay(self._openings)
+
+
+class Attempt:
+    """One request a `Breaker` let through, to be told its outcome."""
+
+    def __init__(self, breaker: Breaker, probe: bool) -> None:
+        self._breaker = breaker
+        self._probe = probe
+        self._told = False
+
+    def answered(self) -> None:
+        """The request was answered."""
+        self._told = True
+        self._breaker.answered()
+
+    def unanswered(self, now: float) -> None:
+        """The request was left unanswered."""
+        self._told = True
+        self._breaker.unanswered(now)
+
+    def __enter__(self) -> Attempt:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        if self._probe and not self._told:
+            self._breaker.released()

@@ -161,3 +161,27 @@ def test_a_breaker_counts_the_unanswered_since_the_last_answer() -> None:
     assert breaker.unanswered_in_a_row == 2
     breaker.answered()
     assert breaker.unanswered_in_a_row == 0
+
+
+def test_an_attempt_tells_the_breaker_its_outcome() -> None:
+    breaker = CircuitBreaker(after=1, pause=Fixed(10)).breaker()
+    attempt = breaker.attempt(0)
+    assert attempt is not None
+    with attempt:
+        attempt.unanswered(0)
+    assert breaker.is_open and breaker.attempt(5) is None
+
+
+def test_a_probe_whose_outcome_is_never_told_is_released() -> None:
+    breaker = CircuitBreaker(after=1, pause=Fixed(10)).breaker()
+    breaker.unanswered(0)
+    with pytest.raises(KeyboardInterrupt):
+        attempt = breaker.attempt(10)
+        assert attempt is not None
+        with attempt:
+            raise KeyboardInterrupt
+    probe = breaker.attempt(10)
+    assert probe is not None
+    with probe:
+        probe.answered()
+    assert not breaker.is_open
