@@ -40,20 +40,14 @@ class Scheduler:
     """The schedule of one device: poll intervals, overrides, pending refreshes, following.
 
     Each key keeps its own rhythm: a read a refresh or a retry asked for does not move the next
-    regular one. A polled key whose read failed is read again `retry_after` seconds later, then
-    after twice as long at each further failure, but never later than its next regular read.
+    regular one. Whether, and when, a failed read is tried again is the protocol's to say, as it
+    alone knows what a failure means: it says so when it records the read.
     """
 
     def __init__(self, clock: Clock, poll_intervals: Mapping[PollRate, float | None] = DEFAULT_INTERVALS,
-                 *, min_poll_interval: float = 0.0, retry_after: float = 0.0) -> None:
-        """Args:
-            retry_after: seconds before a failed read is tried again; 0 waits for the next
-                regular read.
-        """
+                 *, min_poll_interval: float = 0.0) -> None:
         if min_poll_interval < 0:
             raise ValueError(f"min_poll_interval cannot be negative, got {min_poll_interval}")
-        if not (math.isfinite(retry_after) and retry_after >= 0):
-            raise ValueError(f"retry_after must be a finite number >= 0, got {retry_after}")
         model_intervals: dict[PollRate, float | None] = {}
         for poll_rate in PollRate:
             default = poll_intervals.get(poll_rate, DEFAULT_INTERVALS[poll_rate])
@@ -68,7 +62,6 @@ class Scheduler:
 
         self._clock = clock
         self._min_poll_interval = min_poll_interval
-        self._retry_after = retry_after
         self._model_intervals = model_intervals
         self._rate_overrides: dict[PollRate, float] = {}
         self._key_overrides: dict[str, float] = {}
@@ -208,14 +201,22 @@ class Scheduler:
 
     # ---------------------------------------------------------------------------------- read
 
-    def record(self, key: str, value: DataValue[Any] | None, *, success: bool) -> None:
+    def record(self, key: str, value: DataValue[Any] | None, *, success: bool,
+               retry_after: float | None = None) -> None:
         """Reports the outcome of a read attempt for `key`; may consume a pending refresh and
-        advance following."""
+        advance following.
+
+        Args:
+            retry_after: seconds after which the protocol asks for `key` to be read again, sooner
+                than its rhythm would; None leaves it to the rhythm, and ends one asked for before.
+        """
         self._require(key)
+        if retry_after is not None and not (math.isfinite(retry_after) and retry_after >= 0):
+            raise ValueError(f"retry_after must be a finite number >= 0, got {retry_after}")
         now = self._clock.monotonic()
         if self._regular_due(key) <= now:
             self._last_regular[key] = now
-        self._record_outcome(key, success, now)
+        self._record_outcome(key, success, now, retry_after)
 
         pending = self._pending.get(key)
         if pending is None or pending.not_before > now:
@@ -231,20 +232,15 @@ class Scheduler:
         self._require(key)
         return self._failures.get(key, 0)
 
-    def _record_outcome(self, key: str, success: bool, now: float) -> None:
+    def _record_outcome(self, key: str, success: bool, now: float, retry_after: float | None) -> None:
         if success:
             self._failures.pop(key, None)
+        else:
+            self._failures[key] = self._failures.get(key, 0) + 1
+        if retry_after is None:
             self._retry_at.pop(key, None)
-            return
-        failures = self._failures.get(key, 0) + 1
-        self._failures[key] = failures
-        if not self._retry_after or not self._polled.get(key, False):
-            return
-        wait = self._retry_after * 2 ** (failures - 1)
-        interval = self.interval(key)
-        if interval is not None:
-            wait = min(wait, interval)
-        self._retry_at[key] = now + wait
+        else:
+            self._retry_at[key] = now + retry_after
 
     def _advance_following(self, key: str, value: DataValue[Any] | None, success: bool, now: float) -> None:
         following = self._following[key]
@@ -262,8 +258,8 @@ class Scheduler:
     # ---------------------------------------------------------------------------------- due
 
     def due(self) -> list[str]:
-        """Keys to read now, in priority order: pending refreshes and retries, never-read, most
-        overdue."""
+        """Keys to read now, in priority order: pending refreshes and the retries a protocol asked
+        for, never-read, most overdue."""
         now = self._clock.monotonic()
         order = {key: index for index, key in enumerate(self._points)}
         asked = {key: pending.not_before for key, pending in self._pending.items() if pending.not_before <= now}

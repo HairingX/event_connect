@@ -25,24 +25,20 @@ class Timing:
     """The shortest interval any point may be read at, however it is overridden."""
     read_back_after: float = 1.0
     """Seconds from a write until a read shows it, unless a point says otherwise."""
-    retry_after: float = 1.0
-    """Seconds before a failed read is tried again, doubled at each further failure up to the
-    point's interval; 0 waits for the next regular read."""
     offline_after: float = 30.0
     """Seconds a device may go without answering before it counts as not answering; a single
     lost answer then does not make it unavailable."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "poll_intervals", MappingProxyType(dict(self.poll_intervals)))
-        for name in ("min_poll_interval", "read_back_after", "retry_after", "offline_after"):
+        for name in ("min_poll_interval", "read_back_after", "offline_after"):
             seconds: float = getattr(self, name)
             if not (math.isfinite(seconds) and seconds >= 0):
                 raise ValueError(f"{name} must be a finite number >= 0, got {seconds}")
 
     def scheduler(self, clock: Clock) -> Scheduler:
         """A scheduler that plans by this timing."""
-        return Scheduler(clock, self.poll_intervals, min_poll_interval=self.min_poll_interval,
-                         retry_after=self.retry_after)
+        return Scheduler(clock, self.poll_intervals, min_poll_interval=self.min_poll_interval)
 
     def read_back_delay(self, point: Point[Any]) -> float:
         """Seconds after writing `point` before what its write disturbs is read."""
@@ -53,5 +49,4 @@ class Timing:
 
 DEFAULT_TIMING = Timing()
 """A timing for a device nothing has been measured on: the default poll intervals, a second for a
-write to show, a failed read tried again after a second, and half a minute of silence before the
-device counts as not answering."""
+write to show, and half a minute of silence before the device counts as not answering."""
