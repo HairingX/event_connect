@@ -217,6 +217,11 @@ class Breaker:
         """How many times it has opened."""
 
     @property
+    def unanswered_in_a_row(self) -> int:
+        """Requests left unanswered since the last answer."""
+        return self._unanswered
+
+    @property
     def is_open(self) -> bool:
         """Whether requests are refused, or wait for a probe, rather than sent."""
         return self._open_until is not None
@@ -240,6 +245,11 @@ class Breaker:
         self._unanswered = 0
         self._openings = 0
         self._open_until = None
+        self._probing = False
+
+    def released(self) -> None:
+        """Note that a request let through was not sent after all, or its outcome is unknown, as
+        when it was cancelled: a probe may go again, and nothing else changes."""
         self._probing = False
 
     def unanswered(self, now: float) -> None:

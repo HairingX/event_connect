@@ -144,3 +144,20 @@ def test_each_device_keeps_its_own_breaker() -> None:
     first, second = settings.breaker(), settings.breaker()
     first.unanswered(0)
     assert first.is_open and not second.is_open
+
+
+def test_a_released_probe_lets_another_through() -> None:
+    breaker = CircuitBreaker(after=1, pause=Fixed(10)).breaker()
+    breaker.unanswered(0)
+    breaker.allows(10)
+    breaker.released()
+    assert breaker.allows(10) and breaker.is_open
+
+
+def test_a_breaker_counts_the_unanswered_since_the_last_answer() -> None:
+    breaker = CircuitBreaker(after=5).breaker()
+    breaker.unanswered(0)
+    breaker.unanswered(1)
+    assert breaker.unanswered_in_a_row == 2
+    breaker.answered()
+    assert breaker.unanswered_in_a_row == 0
