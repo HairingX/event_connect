@@ -751,6 +751,15 @@ def test_a_read_is_tried_again_when_the_protocol_asks() -> None:
     assert scheduler.due() == ["battery"]
 
 
+def test_a_read_the_protocol_asks_for_at_once_waits_for_the_shortest_interval_the_device_copes_with() -> None:
+    clock = FakeClock()
+    scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0}, min_poll_interval=5.0)
+    scheduler.set_points([_point("battery", PollRate.RARE)])
+    _activate(scheduler, "battery")
+    scheduler.record("battery", None, success=False, retry_after=0.0)
+    assert scheduler.next_due() == clock.monotonic() + 5.0
+
+
 def test_a_read_recorded_without_a_retry_ends_the_one_asked_for() -> None:
     clock = FakeClock()
     scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0})

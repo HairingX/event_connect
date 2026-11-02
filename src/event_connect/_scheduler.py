@@ -208,7 +208,8 @@ class Scheduler:
 
         Args:
             retry_after: seconds after which the protocol asks for `key` to be read again, sooner
-                than its rhythm would; None leaves it to the rhythm, and ends one asked for before.
+                than its rhythm would, though never sooner than `min_poll_interval`; None leaves
+                it to the rhythm, and ends one asked for before.
         """
         self._require(key)
         if retry_after is not None and not (math.isfinite(retry_after) and retry_after >= 0):
@@ -240,7 +241,7 @@ class Scheduler:
         if retry_after is None:
             self._retry_at.pop(key, None)
         else:
-            self._retry_at[key] = now + retry_after
+            self._retry_at[key] = now + max(retry_after, self._min_poll_interval)
 
     def _advance_following(self, key: str, value: DataValue[Any] | None, success: bool, now: float) -> None:
         following = self._following[key]
