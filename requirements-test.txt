@@ -2,3 +2,4 @@
 # build red by itself; Dependabot proposes each update as a pull request.
 pytest==9.1.1
 pyright==1.1.414
+pytest-cov==7.1.0
