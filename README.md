@@ -25,6 +25,7 @@ every package installed in one Home Assistant shares one copy of it.
 | `_scheduler` | `Scheduler`: which keys are due for a read, and when |
 | `_timing` | `Timing`: a library's poll intervals, read-back wait and grace before a device counts as not answering, with `DEFAULT_TIMING` |
 | `_resilience` | The parts a protocol assembles its riding out of a busy, slow or silent device from: `Fixed`, `Exponential`, `Steps`, `Jitter`; `Attempts`, `Within`; `Retry`; `CircuitBreaker` |
+| `_passes` | `Passes`: one pass at a time over what is due; a poll made during one waits for it |
 | `_reachability` | `Reachability`: whether a device answers, as its consumers should see it, and what to read when it answers again |
 | `_events` | `Subscriptions`: who is told what, and when a change is a change |
 | `_status` | `Status` and `StatusBoard`: what a client knows of its device apart from its points, and who is told when it changes |
@@ -101,7 +102,8 @@ logged once each.
   that it is not asked again and again; and a `retry_after` given to `record()` for a read the
   device should be asked for again soon. Let a model set them in its options, and whoever creates
   the device override the model.
-- **Client:** keep one request in flight per device. Read what `due()` lists in as few requests
+- **Client:** keep one request in flight per device, and run each pass through `Passes`, so
+  that polls made together cause one pass. Read what `due()` lists in as few requests
   as the protocol allows, `record()` every key read with whether it was answered, tell a
   `Reachability` of every request, answered or not, keep the statuses in a `StatusBoard`, and
   sleep until `next_due()` - or for a short tick, whichever comes first - between passes.

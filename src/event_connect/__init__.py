@@ -38,6 +38,7 @@ from ._point import (
     select,
     selector,
 )
+from ._passes import Passes
 from ._reachability import Reachability
 from ._resilience import (
     NO_RETRY,
@@ -89,6 +90,7 @@ __all__ = [
     "Limits",
     "ModelError",
     "NotConnectedError",
+    "Passes",
     "Point",
     "PollRate",
     "Pulse",
