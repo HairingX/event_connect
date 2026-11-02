@@ -722,65 +722,15 @@ def test_reads_outside_the_deadband_go_on_being_followed() -> None:
 # ============================================================================== retries
 
 
-def test_a_retry_wait_must_be_a_finite_number_of_seconds() -> None:
+def test_a_retry_the_protocol_asks_for_must_be_a_finite_number_of_seconds() -> None:
+    scheduler = Scheduler(FakeClock())
+    scheduler.set_points([_point("a")])
     for seconds in (-1.0, float("inf"), float("nan")):
         with pytest.raises(ValueError):
-            Scheduler(FakeClock(), retry_after=seconds)
+            scheduler.record("a", None, success=False, retry_after=seconds)
 
 
-def test_a_failed_read_is_tried_again_soon_and_later_at_each_failure() -> None:
-    clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0}, retry_after=1.0)
-    scheduler.set_points([_point("battery", PollRate.RARE)])
-    _activate(scheduler, "battery")
-    scheduler.record("battery", None, success=False)
-    retried: list[float] = []
-    start = clock.monotonic()
-    for _ in range(16):
-        clock.advance(1.0)
-        if scheduler.due() == ["battery"]:
-            retried.append(clock.monotonic() - start)
-            scheduler.record("battery", None, success=False)
-    assert retried == [1.0, 3.0, 7.0, 15.0]
-    assert scheduler.consecutive_failures("battery") == 5
-
-
-def test_a_retry_never_waits_longer_than_the_key_s_interval() -> None:
-    clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0}, retry_after=8.0)
-    scheduler.set_points([_point("a", PollRate.FAST)])
-    _activate(scheduler, "a")
-    scheduler.record("a", None, success=False)
-    scheduler.record("a", None, success=False)
-    assert scheduler.next_due() == clock.monotonic() + 10.0
-
-
-def test_a_success_ends_the_retries_and_the_count() -> None:
-    clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0}, retry_after=1.0)
-    scheduler.set_points([_point("a", PollRate.RARE)])
-    _activate(scheduler, "a")
-    scheduler.record("a", None, success=False)
-    clock.advance(1.0)
-    assert scheduler.due() == ["a"]
-    scheduler.record("a", _dv(1), success=True)
-    assert scheduler.consecutive_failures("a") == 0
-    clock.advance(10.0)
-    assert scheduler.due() == []
-
-
-def test_a_retry_does_not_move_the_regular_rhythm() -> None:
-    clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0}, retry_after=1.0)
-    scheduler.set_points([_point("a", PollRate.FAST)])
-    _activate(scheduler, "a")
-    scheduler.record("a", None, success=False)
-    assert _tick(scheduler, clock, 1.0, {"a": (1, True)}) == ["a"]
-    assert _tick(scheduler, clock, 8.0, {}) == []
-    assert _tick(scheduler, clock, 1.0, {"a": (1, True)}) == ["a"]
-
-
-def test_without_a_retry_wait_a_failed_read_waits_for_its_next_turn() -> None:
+def test_a_failed_read_waits_for_its_rhythm_unless_the_protocol_asks_for_a_retry() -> None:
     clock = FakeClock()
     scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
@@ -790,10 +740,62 @@ def test_without_a_retry_wait_a_failed_read_waits_for_its_next_turn() -> None:
     assert scheduler.due() == []
 
 
-def test_a_key_nobody_polls_is_not_retried() -> None:
+def test_a_read_is_tried_again_when_the_protocol_asks() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, retry_after=1.0)
+    scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0})
+    scheduler.set_points([_point("battery", PollRate.RARE)])
+    _activate(scheduler, "battery")
+    scheduler.record("battery", None, success=False, retry_after=0.5)
+    assert scheduler.next_due() == clock.monotonic() + 0.5
+    clock.advance(0.5)
+    assert scheduler.due() == ["battery"]
+
+
+def test_a_read_the_protocol_asks_for_at_once_waits_for_the_shortest_interval_the_device_copes_with() -> None:
+    clock = FakeClock()
+    scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0}, min_poll_interval=5.0)
+    scheduler.set_points([_point("battery", PollRate.RARE)])
+    _activate(scheduler, "battery")
+    scheduler.record("battery", None, success=False, retry_after=0.0)
+    assert scheduler.next_due() == clock.monotonic() + 5.0
+
+
+def test_a_read_recorded_without_a_retry_ends_the_one_asked_for() -> None:
+    clock = FakeClock()
+    scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0})
+    scheduler.set_points([_point("a", PollRate.RARE)])
+    _activate(scheduler, "a")
+    scheduler.record("a", None, success=False, retry_after=1.0)
+    scheduler.record("a", _dv(1), success=True)
+    clock.advance(10.0)
+    assert scheduler.due() == []
+
+
+def test_failures_are_counted_until_a_read_succeeds() -> None:
+    scheduler = Scheduler(FakeClock())
     scheduler.set_points([_point("a")])
     scheduler.record("a", None, success=False)
+    scheduler.record("a", None, success=False)
+    assert scheduler.consecutive_failures("a") == 2
+    scheduler.record("a", _dv(1), success=True)
+    assert scheduler.consecutive_failures("a") == 0
+
+
+def test_a_retry_does_not_move_the_regular_rhythm() -> None:
+    clock = FakeClock()
+    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler.set_points([_point("a", PollRate.FAST)])
+    _activate(scheduler, "a")
+    scheduler.record("a", None, success=False, retry_after=1.0)
+    assert _tick(scheduler, clock, 1.0, {"a": (1, True)}) == ["a"]
+    assert _tick(scheduler, clock, 8.0, {}) == []
+    assert _tick(scheduler, clock, 1.0, {"a": (1, True)}) == ["a"]
+
+
+def test_a_retry_is_read_even_for_a_key_nobody_polls() -> None:
+    clock = FakeClock()
+    scheduler = Scheduler(clock)
+    scheduler.set_points([_point("a")])
+    scheduler.record("a", None, success=False, retry_after=1.0)
     clock.advance(1.0)
-    assert scheduler.due() == []
+    assert scheduler.due() == ["a"]

@@ -39,8 +39,24 @@ from ._point import (
     selector,
 )
 from ._reachability import Reachability
+from ._resilience import (
+    NO_RETRY,
+    AnyOf,
+    Attempt,
+    Attempts,
+    Breaker,
+    CircuitBreaker,
+    Exponential,
+    Fixed,
+    Jitter,
+    Retry,
+    Steps,
+    Stop,
+    Wait,
+    Within,
+)
 from ._scheduler import Scheduler
-from ._status import Status, StatusCallback
+from ._status import Status, StatusBoard, StatusCallback
 from ._timing import DEFAULT_TIMING, Timing
 from ._unit import Unit
 from ._value import DataValue, Quality, Value, stale
@@ -50,15 +66,24 @@ __version__ = _installed_version("event_connect")
 __all__ = [
     "DEFAULT_INTERVALS",
     "DEFAULT_TIMING",
+    "NO_RETRY",
     "VALUE_TYPES",
+    "AnyOf",
+    "Attempt",
+    "Attempts",
     "AuthenticationError",
+    "Breaker",
     "CannotConnectError",
     "Certainty",
     "Change",
+    "CircuitBreaker",
     "ClientError",
     "Clock",
     "DataValue",
+    "Exponential",
+    "Fixed",
     "InvalidValueError",
+    "Jitter",
     "Key",
     "Labels",
     "Limits",
@@ -68,13 +93,17 @@ __all__ = [
     "PollRate",
     "Pulse",
     "Quality",
-    "ReadOnlyError",
     "Reachability",
+    "ReadOnlyError",
     "Refresh",
+    "Retry",
     "Scheduler",
     "Selector",
     "Status",
+    "StatusBoard",
     "StatusCallback",
+    "Steps",
+    "Stop",
     "Subscriber",
     "Subscriptions",
     "SystemClock",
@@ -85,6 +114,8 @@ __all__ = [
     "UnsupportedDeviceError",
     "Value",
     "ValueCallback",
+    "Wait",
+    "Within",
     "Write",
     "WriteKind",
     "changed",

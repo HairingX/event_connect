@@ -114,7 +114,7 @@ def test_a_fake_clock_moves_both_clocks_only_when_told() -> None:
 
 def test_the_package_imports_nothing_but_the_standard_library() -> None:
     root = Path(core.__file__).parent
-    allowed = {"__future__", "collections", "dataclasses", "datetime", "enum", "importlib", "logging", "math", "statistics", "time",
+    allowed = {"__future__", "collections", "dataclasses", "datetime", "enum", "importlib", "logging", "math", "random", "statistics", "time",
                "types", "typing"}
     for path in root.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -123,3 +123,22 @@ def test_the_package_imports_nothing_but_the_standard_library() -> None:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     assert alias.name.split(".")[0] in allowed, f"{path.name} imports {alias.name}"
+
+
+def test_a_status_board_tells_its_subscribers_every_change_and_keeps_a_raising_one_from_the_others() -> None:
+    clock = FakeClock()
+    board = core.StatusBoard(clock)
+    seen: list[tuple[bool | None, bool | None]] = []
+
+    def raising(status: core.Status, old: DataValue[bool] | None, new: DataValue[bool]) -> None:
+        raise RuntimeError("subscriber")
+
+    board.subscribe(core.Status.CONNECTED, raising)
+    unsubscribe = board.subscribe(
+        core.Status.CONNECTED, lambda _s, old, new: seen.append((None if old is None else old.value, new.value)))
+    board.set(core.Status.CONNECTED, True)
+    board.set(core.Status.CONNECTED, True)
+    unsubscribe()
+    board.set(core.Status.CONNECTED, False)
+    assert seen == [(None, False), (False, True)]
+    assert board.value(core.Status.CONNECTED).value is False

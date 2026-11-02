@@ -12,7 +12,6 @@ from event_connect.testing import FakeClock, FakePoint
 @pytest.mark.parametrize("fields", [
     {"read_back_after": -1.0},
     {"min_poll_interval": float("nan")},
-    {"retry_after": float("inf")},
     {"offline_after": -1.0},
 ])
 def test_a_timing_that_cannot_be_meant_is_refused(fields: dict[str, Any]) -> None:
@@ -27,14 +26,11 @@ def test_a_timing_keeps_a_frozen_copy_of_its_intervals() -> None:
     assert timing.poll_intervals[PollRate.FAST] == 5.0
 
 
-def test_its_scheduler_plans_by_its_intervals_and_retries() -> None:
+def test_its_scheduler_plans_by_its_intervals() -> None:
     clock = FakeClock()
-    scheduler = Timing(poll_intervals={PollRate.FAST: 5.0}, retry_after=2.0).scheduler(clock)
+    scheduler = Timing(poll_intervals={PollRate.FAST: 5.0}).scheduler(clock)
     scheduler.set_points([FakePoint(Key("a", int), poll_rate=PollRate.FAST)])
-    scheduler.set_polled("a", True)
-    scheduler.record("a", None, success=False)
     assert scheduler.interval("a") == 5.0
-    assert scheduler.next_due() == clock.monotonic() + 2.0
 
 
 def test_a_write_shows_after_the_refresh_s_wait_then_the_point_s_then_the_timing_s() -> None:
