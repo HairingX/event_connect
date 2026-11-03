@@ -28,12 +28,12 @@ In your package's `pyproject.toml`, require a range of versions, not one version
 dependencies = ["event_connect>=0.3,<0.4"]
 ```
 
-Home Assistant installs every integration into one Python environment, so it can hold only one
-copy of `event_connect`. If two integrations both build on it, that one copy must satisfy both. A
-package that pinned one exact version would make every other package use that version too, or
-fail to install beside it. A range from the version whose features you use up to the next one
-that may break something lets one copy serve them all. Before 1.0 that next one is the next minor
-version; from 1.0 on, the next major version.
+A Python environment holds one version of each package. An application that uses two packages
+built on `event_connect` therefore gets one copy of it, and that copy must satisfy both. If one of
+them pinned an exact version, the other would have to want that same version, or the two could
+not be installed together. A range, from the version whose features you use up to the next one
+that may break something, lets one copy serve every package built on it. Before 1.0 that next
+one is the next minor version; from 1.0 on, the next major version.
 
 ## Import everything from `event_connect`
 
