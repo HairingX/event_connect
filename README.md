@@ -35,19 +35,13 @@ not be installed together. A range, from the version whose features you use up t
 that may break something, lets one copy serve every package built on it. Before 1.0 that next
 one is the next minor version; from 1.0 on, the next major version.
 
-## Import everything from `event_connect`
+## What you get
+
+Every name below is imported from `event_connect`, or for tests from `event_connect.testing`:
 
 ```python
 from event_connect import Key, Point, Scheduler, Subscriptions
 ```
-
-Everything you use is importable from `event_connect` itself, or from `event_connect.testing` for
-tests. The files in the package start with an underscore (`_point.py`, `_scheduler.py`, ...).
-Python's convention says those are private: they are how this library is organised inside, and a
-file can be split, merged or renamed in any release. Never import from them. The names they hold
-are the public API, and those are what the version numbers protect.
-
-## What you get
 
 | For | Names |
 |---|---|
