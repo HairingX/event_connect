@@ -21,11 +21,11 @@ class Passes:
     async def run(self, work: Callable[[], Awaitable[None]], *, due: Callable[[], bool]) -> bool:
         """Run `work` as a pass, after any pass already running; then only if `due()` still says
         something is due. Returns whether this call ran it."""
-        if self._lock.locked():
-            async with self._lock:
-                pass
-            if not due():
-                return False
+        waited = self._lock.locked()
         async with self._lock:
+            # Asked only once this call holds the lock, so that it sees what the passes queued
+            # before it have read.
+            if waited and not due():
+                return False
             await work()
         return True
