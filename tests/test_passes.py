@@ -36,3 +36,26 @@ def test_a_call_during_a_pass_makes_its_own_after_it_when_something_is_still_due
 
     asyncio.run(together())
     assert ran == ["pass", "pass"] and seen_running == [True, True] and not passes.running
+
+
+def test_polls_made_together_during_a_pass_cause_one_pass_after_it() -> None:
+    passes = Passes()
+    pending = {"a"}
+    reads: list[list[str]] = []
+
+    async def work() -> None:
+        snapshot = sorted(pending)
+        reads.append(snapshot)
+        await asyncio.sleep(0.01)
+        pending.difference_update(snapshot)
+
+    async def later() -> None:
+        await asyncio.sleep(0.001)
+        pending.add("b")
+        await passes.run(work, due=lambda: bool(pending))
+
+    async def together() -> None:
+        await asyncio.gather(passes.run(work, due=lambda: bool(pending)), later(), later(), later())
+
+    asyncio.run(together())
+    assert reads == [["a"], ["b"]]
