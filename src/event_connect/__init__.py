@@ -42,6 +42,7 @@ from ._passes import Passes
 from ._reachability import Reachability
 from ._resilience import (
     NO_RETRY,
+    RECONNECT,
     AnyOf,
     Attempt,
     Attempts,
@@ -68,6 +69,7 @@ __all__ = [
     "DEFAULT_INTERVALS",
     "DEFAULT_TIMING",
     "NO_RETRY",
+    "RECONNECT",
     "VALUE_TYPES",
     "AnyOf",
     "Attempt",
