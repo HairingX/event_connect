@@ -164,16 +164,27 @@ class AnyOf(_Combinable):
 
 @dataclass(frozen=True)
 class Retry:
-    """Try again after `wait`, until `stop` gives up."""
+    """Try again after `wait`, until `stop` gives up; without a `stop`, never give up.
+
+    A subclass may decide differently, in `next_delay`, or check something before each try, in
+    `ready`.
+    """
     wait: Wait
-    stop: Stop
+    stop: Stop | None = None
 
     def next_delay(self, attempts: int, elapsed: float) -> float | None:
         """Seconds until the next try after `attempts` tries, `elapsed` seconds after the first;
         None when it is time to give up."""
-        if self.stop.stops(attempts, elapsed):
+        if self.stop is not None and self.stop.stops(attempts, elapsed):
             return None
         return self.wait.delay(attempts)
+
+    async def ready(self) -> bool:
+        """Whether a try that is due may be made now; a try it refuses waits for the next delay.
+
+        Always True here.
+        """
+        return True
 
 
 NO_RETRY = Retry(Fixed(0), Attempts(1))
@@ -189,10 +200,14 @@ class CircuitBreaker:
     that grows by `pause`'s own rule each time it opens again; then let one request through as a
     probe, which closes it if answered and opens it again if not.
 
+    With a `retry`, each pause is its next delay instead, counted in openings and timed from the
+    first since the last answer; when it gives up, the breaker stays open until it is reset.
+
     The settings only: each device keeps its own `Breaker` of them.
     """
     after: int = 3
     pause: Wait = field(default_factory=lambda: Fixed(60.0))
+    retry: Retry | None = None
 
     def __post_init__(self) -> None:
         if self.after < 1:
@@ -211,6 +226,8 @@ class Breaker:
         self._settings = settings
         self._unanswered = 0
         self._openings = 0
+        self._first_opened_at: float | None = None
+        self._pause = 0.0
         self._open_until: float | None = None
         self._probing = False
         self.opened = 0
@@ -225,6 +242,16 @@ class Breaker:
     def is_open(self) -> bool:
         """Whether requests are refused, or wait for a probe, rather than sent."""
         return self._open_until is not None
+
+    @property
+    def gave_up(self) -> bool:
+        """Whether its `retry` gave up: no probe goes until it is reset."""
+        return self._open_until == math.inf
+
+    @property
+    def openings(self) -> int:
+        """How many times it has opened since the last answer or reset."""
+        return self._openings
 
     def open_for(self, now: float) -> float:
         """Seconds until a probe may go; 0 while closed or once one may."""
@@ -248,10 +275,23 @@ class Breaker:
 
     def answered(self) -> None:
         """Note an answer: the breaker closes."""
+        self.reset()
+
+    def reset(self) -> None:
+        """Close the breaker without an answer, as when the device is connected afresh."""
         self._unanswered = 0
         self._openings = 0
+        self._first_opened_at = None
         self._open_until = None
         self._probing = False
+
+    def postpone(self, now: float) -> None:
+        """Let no probe through for another pause as long as the last, without counting an
+        opening, as when a retry is not ready."""
+        if self._open_until is None:
+            return
+        self._probing = False
+        self._open_until = now + self._pause
 
     def released(self) -> None:
         """Note that a request let through was not sent after all, or its outcome is unknown, as
@@ -266,7 +306,18 @@ class Breaker:
             self._probing = False
             self._openings += 1
             self.opened += 1
-            self._open_until = now + self._settings.pause.delay(self._openings)
+            if self._first_opened_at is None:
+                self._first_opened_at = now
+            self._pause = self._next_pause(now)
+            self._open_until = now + self._pause
+
+    def _next_pause(self, now: float) -> float:
+        retry = self._settings.retry
+        if retry is None:
+            return self._settings.pause.delay(self._openings)
+        assert self._first_opened_at is not None
+        delay = retry.next_delay(self._openings, now - self._first_opened_at)
+        return math.inf if delay is None else delay
 
 
 class Attempt:

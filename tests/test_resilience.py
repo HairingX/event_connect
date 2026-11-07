@@ -1,7 +1,10 @@
 """The standard parts a protocol assembles its riding out of a busy, slow or silent device from."""
 from __future__ import annotations
 
+import asyncio
+import math
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import pytest
 
@@ -95,6 +98,21 @@ def test_no_retry_tries_once() -> None:
     assert NO_RETRY.next_delay(1, 0) is None
 
 
+def test_a_retry_without_a_stop_never_gives_up() -> None:
+    retry = Retry(Fixed(5))
+    assert [retry.next_delay(n, 10.0 ** n) for n in (1, 10, 100)] == [5, 5, 5]
+
+
+def test_a_retry_is_ready_unless_it_says_otherwise() -> None:
+    @dataclass(frozen=True)
+    class Offline(Retry):
+        async def ready(self) -> bool:
+            return False
+
+    assert asyncio.run(Retry(Fixed(5)).ready())
+    assert not asyncio.run(Offline(Fixed(5)).ready())
+
+
 # ========================================================================= circuit breaker
 
 
@@ -185,3 +203,49 @@ def test_a_probe_whose_outcome_is_never_told_is_released() -> None:
     with probe:
         probe.answered()
     assert not breaker.is_open
+
+
+def test_with_a_retry_each_pause_is_its_next_delay_timed_from_the_first_opening() -> None:
+    breaker = CircuitBreaker(after=1, pause=Fixed(60), retry=Retry(Exponential(2), Within(5))).breaker()
+    breaker.unanswered(100)
+    assert breaker.open_for(100) == 2
+    breaker.allows(102)
+    breaker.unanswered(102)
+    assert breaker.open_for(102) == 4 and breaker.openings == 2
+    breaker.allows(106)
+    breaker.unanswered(106)
+    assert breaker.gave_up and breaker.open_for(106) == math.inf
+
+
+def test_a_breaker_whose_retry_gave_up_lets_nothing_through_until_reset() -> None:
+    breaker = CircuitBreaker(after=1, retry=NO_RETRY).breaker()
+    breaker.unanswered(0)
+    assert breaker.gave_up and not breaker.allows(10 ** 9) and breaker.attempt(10 ** 9) is None
+    breaker.reset()
+    assert not breaker.is_open and not breaker.gave_up and breaker.allows(10 ** 9)
+
+
+def test_a_reset_starts_the_retry_over() -> None:
+    breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2))).breaker()
+    breaker.unanswered(0)
+    breaker.allows(2)
+    breaker.unanswered(2)
+    breaker.reset()
+    breaker.unanswered(50)
+    assert breaker.open_for(50) == 2 and breaker.openings == 1
+
+
+def test_a_postponed_probe_waits_the_same_pause_again_without_counting_an_opening() -> None:
+    breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2))).breaker()
+    breaker.unanswered(0)
+    breaker.allows(2)
+    breaker.unanswered(2)
+    assert breaker.allows(6)
+    breaker.postpone(6)
+    assert not breaker.allows(9) and breaker.open_for(6) == 4 and breaker.openings == 2 and breaker.allows(10)
+
+
+def test_postponing_a_closed_breaker_changes_nothing() -> None:
+    breaker = CircuitBreaker(after=1).breaker()
+    breaker.postpone(0)
+    assert not breaker.is_open and breaker.allows(0)

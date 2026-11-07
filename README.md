@@ -299,7 +299,9 @@ Three rules hold throughout:
   after a number of unanswered requests in a row, then lets one probe through. `attempt()`
   returns a handle for one request, on which you report its outcome. Used as a context manager,
   it releases the probe if no outcome was reported, so a cancelled request does not block later
-  ones.
+  ones. With a `retry`, the pauses are its delays, and once it gives up (`gave_up`) nothing goes
+  through until `reset()`, as when the device is connected afresh. Before letting a probe go,
+  ask `await retry.ready()`; if it says no, `postpone(now)` waits the same pause again.
 
 ### Retry policies
 
@@ -311,16 +313,37 @@ from event_connect import Attempts, CircuitBreaker, Exponential, Fixed, Jitter, 
 busy = Retry(wait=Exponential(0.2, factor=2), stop=Attempts(4))                     # a busy reply
 no_data_yet = Retry(wait=Steps(0.5, then=Fixed(1)), stop=Within(7.5))               # a gateway with no data yet
 silent = CircuitBreaker(after=3, pause=Jitter(Exponential(10, factor=2, max=120)))  # a device that stopped answering
+reconnect = CircuitBreaker(after=3, retry=Retry(Exponential(2, max=10), Attempts(8)))  # ask again, 8 times
 
 assert busy.next_delay(attempts=1, elapsed=0.0) == 0.2  # None once it is time to give up
+assert Retry(Fixed(10)).next_delay(attempts=1000, elapsed=86400.0) == 10  # no stop: never gives up
+```
+
+A retry that checks something before each try is a subclass with its own `ready`:
+
+```python
+from dataclasses import dataclass
+
+from event_connect import Exponential, Retry
+
+
+@dataclass(frozen=True)
+class WhenOnline(Retry):
+    online: bool = True
+
+    async def ready(self) -> bool:
+        return self.online             # ask your own check: a ping, the OS, the app
+
+
+retry = WhenOnline(Exponential(2, max=10), online=False)
 ```
 
 | Part | Decides |
 |---|---|
 | `Fixed(s)`, `Exponential(start, factor, max)`, `Steps(a, b, ..., then=)`, `Jitter(wait, spread)` | how long to wait before the next try |
 | `Attempts(n)`, `Within(s)`, combined with `\|` | when to give up |
-| `Retry(wait, stop)` | the delay before each retry, until the stop condition is met |
-| `CircuitBreaker(after, pause)` | when to stop asking a silent device, for how long, and when to let one probe through |
+| `Retry(wait, stop)` | the delay before each retry, until the stop condition is met; without `stop`, forever |
+| `CircuitBreaker(after, pause, retry)` | when to stop asking a silent device, for how long, and when to let one probe through |
 
 Make these policies part of your device definition, with defaults that users of your client can
 override.
@@ -382,7 +405,7 @@ Everything is imported from `event_connect`, and test support from `event_connec
 **Unresponsive devices and retries**
 - `Reachability`: whether the device is online.
 - `CircuitBreaker`, `Breaker`, `Attempt`: when to stop asking a silent device.
-- `Retry`, `NO_RETRY`: how a failed request is retried.
+- `Retry`, `NO_RETRY`: how a failed request is retried, and a silent device asked again.
 - `Wait` with `Fixed`, `Exponential`, `Steps`, `Jitter`: delays between tries.
 - `Stop` with `Attempts`, `Within`, `AnyOf`: when to give up.
 
