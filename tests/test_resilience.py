@@ -10,7 +10,6 @@ import pytest
 
 from event_connect import (
     NO_RETRY,
-    RECONNECT,
     Attempts,
     CircuitBreaker,
     Exponential,
@@ -112,11 +111,6 @@ def test_a_retry_is_ready_unless_it_says_otherwise() -> None:
 
     assert asyncio.run(Retry(Fixed(5)).ready())
     assert not asyncio.run(Offline(Fixed(5)).ready())
-
-
-def test_reconnect_asks_after_2_4_and_8_seconds_then_every_10_and_never_gives_up() -> None:
-    assert [RECONNECT.next_delay(n, 0) for n in range(1, 7)] == [2, 4, 8, 10, 10, 10]
-    assert RECONNECT.next_delay(1000, 86400) == 10
 
 
 # ========================================================================= circuit breaker

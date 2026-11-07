@@ -190,10 +190,6 @@ class Retry:
 NO_RETRY = Retry(Fixed(0), Attempts(1))
 """One try, and none again."""
 
-RECONNECT = Retry(Exponential(2.0, max=10.0))
-"""Ask a device that stopped answering again after 2, 4 and 8 s, then every 10 s, and never give
-up: what a device on its own link on a local network recovers fastest with."""
-
 
 # ========================================================================= circuit breaker
 

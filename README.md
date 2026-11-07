@@ -343,7 +343,6 @@ retry = WhenOnline(Exponential(2, max=10), online=False)
 | `Fixed(s)`, `Exponential(start, factor, max)`, `Steps(a, b, ..., then=)`, `Jitter(wait, spread)` | how long to wait before the next try |
 | `Attempts(n)`, `Within(s)`, combined with `\|` | when to give up |
 | `Retry(wait, stop)` | the delay before each retry, until the stop condition is met; without `stop`, forever |
-| `RECONNECT` | `Retry(Exponential(2, max=10))`: 2, 4 and 8 s, then every 10 s, never giving up |
 | `CircuitBreaker(after, pause, retry)` | when to stop asking a silent device, for how long, and when to let one probe through |
 
 Make these policies part of your device definition, with defaults that users of your client can
@@ -406,8 +405,7 @@ Everything is imported from `event_connect`, and test support from `event_connec
 **Unresponsive devices and retries**
 - `Reachability`: whether the device is online.
 - `CircuitBreaker`, `Breaker`, `Attempt`: when to stop asking a silent device.
-- `Retry`, `NO_RETRY`, `RECONNECT`: how a failed request is retried, and a silent device asked
-  again.
+- `Retry`, `NO_RETRY`: how a failed request is retried, and a silent device asked again.
 - `Wait` with `Fixed`, `Exponential`, `Steps`, `Jitter`: delays between tries.
 - `Stop` with `Attempts`, `Within`, `AnyOf`: when to give up.
 
