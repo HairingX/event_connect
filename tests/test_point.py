@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from event_connect import (
+    Certainty,
     Change,
     Key,
     Labels,
@@ -22,6 +23,7 @@ from event_connect import (
     Transforms,
     Unit,
     WriteKind,
+    WriteRange,
     select,
 )
 from event_connect.testing import FakePoint
@@ -45,7 +47,7 @@ def _refused(match: str, key: Key[Any] | str = Key("p", int), **fields: Any) -> 
     {"can_write": True, "limits": Limits(5, 35, 0.5), "on_write": Refresh(["a", "b"], after=2, until_stable=30)},
     {"on_change": Refresh(Labels(kind="alarm"))},
     {"poll_always": True, "poll_rate": PollRate.STATIC, "unit": Unit.CELSIUS},
-    {"can_read": False, "can_write": True, "write_kind": WriteKind.COMMAND, "read_back_after": 1.0},
+    {"can_read": False, "can_write": True, "write_kind": WriteKind.COMMAND},
 ], ids=lambda f: "-".join(sorted(f)) or "plain")
 def test_a_valid_point_is_accepted(fields: dict[str, Any]) -> None:
     FakePoint(Key("p", float), **fields)
@@ -126,18 +128,10 @@ def test_on_write_has_no_change_to_wait_for() -> None:
     _refused("`when` belongs to on_change", can_write=True, on_write=Refresh(["a"], when=Change.RISING))
 
 
-def test_re_reading_until_stable_after_a_write_needs_an_interval() -> None:
-    _refused("on_write re-reads until stable", can_write=True, read_back_after=0,
-             on_write=Refresh(["a"], until_stable=10))
-
-
-def test_read_back_after_needs_a_write_side() -> None:
-    _refused("read_back_after describes writes", read_back_after=1)
-
-
-@pytest.mark.parametrize("seconds", [-1.0, float("inf"), float("nan")])
-def test_read_back_after_must_be_a_finite_number_of_seconds(seconds: float) -> None:
-    _refused("read_back_after must be a finite", can_write=True, read_back_after=seconds)
+def test_a_point_has_no_read_back_time_of_its_own() -> None:
+    fields: dict[str, Any] = {"read_back_after": 1.0}
+    with pytest.raises(TypeError):
+        FakePoint(Key("p", int), can_write=True, **fields)
 
 
 def test_a_label_needs_a_name() -> None:
@@ -146,9 +140,9 @@ def test_a_label_needs_a_name() -> None:
 
 def test_every_problem_is_named_in_one_error() -> None:
     with pytest.raises(ValueError) as caught:
-        FakePoint(Key("p", bool), deadband=-1, read_back_after=1)
+        FakePoint(Key("p", bool), deadband=-1, limits=Limits(0, 1))
     message = str(caught.value)
-    assert "deadband applies to numbers" in message and "read_back_after describes writes" in message
+    assert "deadband applies to numbers" in message and "limits describe writes" in message
 
 
 # ================================================================================== parts
@@ -190,11 +184,26 @@ def test_empty_labels_select_nothing_and_are_refused() -> None:
         Labels()
 
 
-def test_a_selection_keeps_the_order_of_the_points() -> None:
-    points = [FakePoint(Key(name, int), labels={"group": group}) for name, group in
-              (("a", 1), ("b", 2), ("c", 1))]
-    assert [p.key for p in select(points, Labels(group=1))] == ["a", "c"]
-    assert [p.key for p in select(points, ("c", "a"))] == ["a", "c"]
+def _grouped() -> list[FakePoint[int]]:
+    return [FakePoint(Key(name, int), labels={"group": group}) for name, group in
+            (("a", 1), ("b", 2), ("c", 1))]
+
+
+def test_a_selection_by_labels_keeps_the_order_of_the_points() -> None:
+    assert [p.key for p in select(_grouped(), Labels(group=1))] == ["a", "c"]
+
+
+def test_a_selection_by_labels_no_point_carries_is_empty() -> None:
+    assert select(_grouped(), Labels(group=3)) == ()
+
+
+def test_a_selection_by_keys_keeps_the_order_they_are_given_in() -> None:
+    assert [p.key for p in select(_grouped(), ("c", "a"))] == ["c", "a"]
+
+
+def test_a_selection_by_keys_names_every_key_no_point_has() -> None:
+    with pytest.raises(KeyError, match="unknown key\\(s\\): 'x', 'y'"):
+        select(_grouped(), ("a", "x", "b", "y"))
 
 
 def test_refresh_takes_keys_or_labels() -> None:
@@ -238,6 +247,68 @@ def test_limits_say_why_a_value_may_not_be_written() -> None:
     assert limits.problem(15) is None
     assert limits.problem(9) == "9 is below the minimum 10"
     assert limits.problem(21) == "21 is above the maximum 20"
+
+
+def test_limits_refuse_a_value_off_their_steps_counted_from_the_minimum() -> None:
+    limits = Limits(5, 35, step=0.5)
+    assert limits.problem(20.5) is None and limits.problem(35) is None
+    assert limits.problem(20.25) == "20.25 is not a multiple of step 0.5 from 5"
+
+
+def test_limits_without_a_minimum_count_their_steps_from_zero() -> None:
+    assert Limits(step=2).problem(-4) is None
+    assert Limits(step=2).problem(3) == "3 is not a multiple of step 2 from 0"
+
+
+def test_a_value_a_rounding_error_off_a_step_is_on_it() -> None:
+    assert Limits(0, 1, step=0.1).problem(0.1 + 0.2) is None
+
+
+# ============================================================================ write range
+
+
+def test_a_write_range_comes_from_the_limits() -> None:
+    point = FakePoint(Key("p", float), can_write=True, limits=Limits(5, 35, 0.5))
+    assert point.write_range() == WriteRange(5, 35, 0.5)
+
+
+def test_a_whole_number_steps_by_one_and_a_float_by_nothing_unless_told() -> None:
+    assert FakePoint(Key("p", int), can_write=True, limits=Limits(0, 10)).write_range() == WriteRange(0, 10, 1)
+    assert FakePoint(Key("p", float), can_write=True, limits=Limits(0, 10)).write_range() == WriteRange(0, 10, None)
+
+
+@pytest.mark.parametrize("fields", [
+    {"can_write": True},
+    {"can_write": True, "limits": Limits(min=0)},
+    {"can_write": True, "limits": Limits(max=10)},
+    {"can_write": True, "limits": Limits(step=1)},
+    {},
+], ids=["no limits", "no max", "no min", "step only", "read only"])
+def test_a_point_without_both_ends_has_no_write_range(fields: dict[str, Any]) -> None:
+    assert FakePoint(Key("p", int), **fields).write_range() is None
+
+
+@pytest.mark.parametrize("build", [
+    lambda: WriteRange(10, 0, None),
+    lambda: WriteRange(0, 10, 0),
+])
+def test_a_contradictory_write_range_is_refused(build: Callable[[], object]) -> None:
+    with pytest.raises(ValueError):
+        build()
+
+
+# ============================================================================== certainty
+
+
+def test_a_point_is_reported_until_it_says_otherwise() -> None:
+    assert FakePoint(Key("p", int)).certainty is Certainty.REPORTED
+    assert FakePoint(Key("p", int), certainty=Certainty.VERIFIED).certainty is Certainty.VERIFIED
+
+
+def test_certainty_is_given_by_name() -> None:
+    args: tuple[Any, ...] = (Key("p", int), Certainty.VERIFIED)
+    with pytest.raises(TypeError):
+        FakePoint(*args)
 
 
 @pytest.mark.parametrize("transform", [Transforms.INVERT_BOOL, Transforms.SECONDS_AS_MINUTES,

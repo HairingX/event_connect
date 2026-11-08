@@ -33,10 +33,22 @@ def test_its_scheduler_plans_by_its_intervals() -> None:
     assert scheduler.interval("a") == 5.0
 
 
-def test_a_write_shows_after_the_refresh_s_wait_then_the_point_s_then_the_timing_s() -> None:
-    def point(**fields: Any) -> FakePoint[int]:
-        return FakePoint(Key("p", int), can_write=True, **fields)
+def _written(**fields: Any) -> FakePoint[int]:
+    return FakePoint(Key("p", int), can_write=True, **fields)
 
-    assert DEFAULT_TIMING.read_back_delay(point(on_write=Refresh(["a"], after=3.0), read_back_after=2.0)) == 3.0
-    assert DEFAULT_TIMING.read_back_delay(point(on_write=Refresh(["a"]), read_back_after=2.0)) == 2.0
-    assert DEFAULT_TIMING.read_back_delay(point(on_write=Refresh(["a"]))) == DEFAULT_TIMING.read_back_after
+
+def test_a_written_point_is_read_back_after_the_timing_s_wait_whatever_its_on_write_says() -> None:
+    timing = Timing(read_back_after=1.0)
+    assert timing.written_point_delay(_written(on_write=Refresh(["a"], after=3.0))) == 1.0
+    assert timing.written_point_delay(_written()) == 1.0
+
+
+def test_what_a_write_disturbs_is_read_after_the_refresh_s_wait_or_else_the_timing_s() -> None:
+    timing = Timing(read_back_after=1.0)
+    assert timing.on_write_delay(_written(on_write=Refresh(["a"], after=3.0))) == 3.0
+    assert timing.on_write_delay(_written(on_write=Refresh(["a"]))) == 1.0
+    assert timing.on_write_delay(_written()) == 1.0
+
+
+def test_a_timing_has_no_single_read_back_delay() -> None:
+    assert not hasattr(DEFAULT_TIMING, "read_back_delay")

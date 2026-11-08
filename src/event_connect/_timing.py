@@ -1,4 +1,4 @@
-"""How a library plans the reads of its devices: one profile, set by the library, that a client
+"""How a library plans the reads of its devices: one timing, set by the library, that a client
 can be given another of."""
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class Timing:
     min_poll_interval: float = 0.0
     """The shortest interval any point may be read at, however it is overridden."""
     read_back_after: float = 1.0
-    """Seconds from a write until a read shows it, unless a point says otherwise."""
+    """Seconds from a write until a read shows it."""
     offline_after: float = 30.0
     """Seconds a device may go without answering before it counts as not answering; a single
     lost answer then does not make it unavailable."""
@@ -40,11 +40,17 @@ class Timing:
         """A scheduler that plans by this timing."""
         return Scheduler(clock, self.poll_intervals, min_poll_interval=self.min_poll_interval)
 
-    def read_back_delay(self, point: Point[Any]) -> float:
-        """Seconds after writing `point` before what its write disturbs is read."""
+    def written_point_delay(self, point: Point[Any]) -> float:
+        """Seconds after writing `point` before it is read back: `read_back_after`, whatever its
+        `on_write` says."""
+        return self.read_back_after
+
+    def on_write_delay(self, point: Point[Any]) -> float:
+        """Seconds after writing `point` before the points its `on_write` names are read: the
+        refresh's `after`, or `read_back_after` where it has none."""
         if point.on_write is not None and point.on_write.after is not None:
             return point.on_write.after
-        return point.read_back_after if point.read_back_after is not None else self.read_back_after
+        return self.read_back_after
 
 
 DEFAULT_TIMING = Timing()

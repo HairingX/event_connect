@@ -216,8 +216,9 @@ asyncio.run(main())
 
 A real client also:
 - runs a loop that sleeps until the time `next_due()` returns;
-- handles writes: it validates the value against the point's `limits`, waits
-  `Timing.read_back_delay(point)`, and schedules the point's `on_write` refresh;
+- handles writes: it refuses a value that `point.limits.problem(value)` names a reason for,
+  reads the written point back after `Timing.written_point_delay(point)`, and reads the points
+  its `on_write` refresh selects with `select()` after `Timing.on_write_delay(point)`;
 - compares each new value with the last one using `changed(old, new, point.on_change.when)`,
   and schedules the point's `on_change` refresh when it has changed;
 - keeps `set_polled` in step with `should_poll(point, subscriptions, polled)` for every point,
@@ -238,9 +239,14 @@ A `Point[T]` describes how one value behaves:
 - `unit`: the unit of the value.
 - `write_kind`: whether a write is a setting or a command. `pulse` makes a command return to
   its idle value by itself: write, wait, write the idle value.
-- `read_back_after`: how long a write takes to show, where this point differs from its device.
 - `on_write`, `on_change`: the follow-up reads a write or a change triggers.
 - `labels`: tags that a `Refresh` can select points by.
+- `certainty`: how certain it is that the point is what it says; `REPORTED` until it has been
+  read on a unit.
+
+`write_range()` gives the values a point can be written with, as a `WriteRange(min, max, step)`:
+from its `limits`, or None without a minimum and a maximum. A protocol's point overrides it where
+it knows more, such as what its encoding can carry.
 
 A point validates itself when it is created, and raises one error that lists every
 inconsistency. Your subclass adds where the value is stored. It overrides `readable` and
@@ -259,9 +265,15 @@ until_stable, when=...)` schedules extra reads of those dependent points:
   one. A failed read neither ends it nor counts.
 - `when` limits the trigger to a value that rises or one that falls.
 
-If `after` is `None`, a refresh triggered by a write waits `Timing.read_back_delay(point)`. That
-is the point's `read_back_after`, or the device's `Timing.read_back_after` when the point has
-none. A refresh triggered by a change runs at once.
+If `after` is `None`, a refresh triggered by a write waits the device's
+`Timing.read_back_after`, and one triggered by a change runs at once. `Timing.on_write_delay(point)`
+gives the wait after a write. The written point itself is always read back after
+`Timing.read_back_after`, which `Timing.written_point_delay(point)` gives, whatever its `on_write`
+says.
+
+`select(points, targets)` gives the points a refresh names: for keys, in the order given, and a
+`KeyError` naming every key that none of the points has; for `Labels`, every point that carries
+them, in the order of the points.
 
 ### Scheduling
 
@@ -393,8 +405,9 @@ Everything is imported from `event_connect`, and test support from `event_connec
 - `Key[T]`: the typed name of a point. `is_key()` and `is_state_type()` check a value and a type.
 - `Point[T]`: the base class for your points.
 - `PollRate`, `Limits`, `Unit`, `WriteKind`, `Pulse`: parts of a point.
+- `WriteRange`: the values a point can be written with, from `Point.write_range()`.
 - `Transform`, `Transforms`: conversions between the device's value and the value shown.
-- `Certainty`: how certain it is that a point's address, conversion and meaning are right.
+- `Certainty`: how certain it is that a point is what it says, as its `certainty` field.
 - `VALUE_TYPES`, `is_instance()`: the types a value may have, and a check for one.
 
 **Values**
