@@ -18,7 +18,7 @@ from ._errors import (
     ReadOnlyError,
     UnsupportedDeviceError,
 )
-from ._events import Subscriber, Subscriptions, ValueCallback, changed, tell
+from ._events import Subscriber, Subscriptions, ValueCallback, changed, should_poll, tell
 from ._key import Key, is_key, is_state_type
 from ._point import (
     DEFAULT_INTERVALS,
@@ -126,6 +126,7 @@ __all__ = [
     "is_state_type",
     "select",
     "selector",
+    "should_poll",
     "stale",
     "tell",
 ]
