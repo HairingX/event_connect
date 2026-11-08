@@ -30,7 +30,7 @@ pip install event-connect
 ```
 
 In your package, require a range of versions up to the next one that may break the API, for
-example `event_connect>=0.4.2,<0.5`. [Versioning](#versioning) explains why.
+example `event_connect>=0.5,<0.6`. [Versioning](#versioning) explains why.
 
 ## Concepts
 
@@ -102,8 +102,8 @@ from dataclasses import KW_ONLY, dataclass
 from typing import Any
 
 from event_connect import (
-    CircuitBreaker, Clock, DataValue, Key, Passes, Point, Quality, Reachability, Status,
-    StatusBoard, Subscriptions, SystemClock, Timing, ValueCallback, stale,
+    CircuitBreaker, Clock, DataValue, Fixed, Key, Passes, Point, Quality, Reachability, Retry,
+    Status, StatusBoard, Subscriptions, SystemClock, Timing, ValueCallback, stale,
 )
 from event_connect.testing import FakeClock
 
@@ -129,8 +129,10 @@ TEMPERATURE = Key("temperature", float)
 POINTS = [RegisterPoint(TEMPERATURE, register=1)]
 
 # 2. Timing: the interval for each poll rate, and how long the device may be silent before
-#    it counts as offline.
+#    it counts as offline. The breaker: after how many unanswered requests in a row to stop
+#    asking, and when to ask again.
 TIMING = Timing(offline_after=30.0)
+BREAKER = CircuitBreaker(after=2, retry=Retry(Fixed(10.0)))
 
 Send = Callable[[Sequence[int]], Awaitable[Mapping[int, int] | None]]
 
@@ -146,7 +148,7 @@ class Client:
         self._subscriptions = Subscriptions()
         self._reachability = Reachability(self._clock, TIMING.offline_after, name="The device")
         self._statuses = StatusBoard(self._clock)
-        self._breaker = CircuitBreaker(after=2).breaker()
+        self._breaker = BREAKER.breaker()
         self._passes = Passes()
 
     # 3. Subscribing: a subscribed key is polled, and its subscriber is told when the
@@ -176,22 +178,24 @@ class Client:
             self._subscriptions.report(point, data)
             self._scheduler.record(point.key, data, success=answer is not None)
 
-    # 5. Sending a request: skipped while the circuit breaker is open. Every outcome,
-    #    including a skipped request, is reported to the breaker and to Reachability, and
-    #    the resulting online state is published as Status.CONNECTED.
+    # 5. Sending a request: skipped while the circuit breaker is open. Every outcome is
+    #    reported to the breaker, and to Reachability, a skipped request among them; whether
+    #    the device now counts as online is published as Status.CONNECTED.
     async def _request(self, registers: Sequence[int]) -> Mapping[int, int] | None:
+        answer: Mapping[int, int] | None = None
         attempt = self._breaker.attempt(self._clock.monotonic())
-        if attempt is None:
-            self._statuses.set(Status.CONNECTED, self._reachability.unanswered())
-            return None
-        with attempt:
-            answer = await self._send(registers)
-            if answer is None:
-                attempt.unanswered(self._clock.monotonic())
-                self._statuses.set(Status.CONNECTED, self._reachability.unanswered())
-            else:
-                attempt.answered()
-                self._statuses.set(Status.CONNECTED, self._reachability.answered(self._scheduler))
+        if attempt is not None:
+            with attempt:
+                answer = await self._send(registers)
+                if answer is None:
+                    attempt.unanswered(self._clock.monotonic())
+                else:
+                    attempt.answered()
+        if answer is None:
+            self._reachability.unanswered()
+        else:
+            self._reachability.answered(self._scheduler)
+        self._statuses.set(Status.CONNECTED, self._reachability.reachable)
         return answer
 
 
@@ -212,8 +216,9 @@ asyncio.run(main())
 
 A real client also:
 - runs a loop that sleeps until the time `next_due()` returns;
-- handles writes: it validates the value against the point's `limits`, waits
-  `Timing.read_back_delay(point)`, and schedules the point's `on_write` refresh;
+- handles writes: it refuses a value that `point.limits.problem(value)` names a reason for,
+  reads the written point back after `Timing.written_point_delay(point)`, and reads the points
+  its `on_write` refresh selects with `select()` after `Timing.on_write_delay(point)`;
 - compares each new value with the last one using `changed(old, new, point.on_change.when)`,
   and schedules the point's `on_change` refresh when it has changed;
 - keeps `set_polled` in step with `should_poll(point, subscriptions, polled)` for every point,
@@ -234,9 +239,14 @@ A `Point[T]` describes how one value behaves:
 - `unit`: the unit of the value.
 - `write_kind`: whether a write is a setting or a command. `pulse` makes a command return to
   its idle value by itself: write, wait, write the idle value.
-- `read_back_after`: how long a write takes to show, where this point differs from its device.
 - `on_write`, `on_change`: the follow-up reads a write or a change triggers.
 - `labels`: tags that a `Refresh` can select points by.
+- `certainty`: how certain it is that the point is what it says; `REPORTED` until it has been
+  read on a unit.
+
+`write_range()` gives the values a point can be written with, as a `WriteRange(min, max, step)`:
+from its `limits`, or None without a minimum and a maximum. A protocol's point overrides it where
+it knows more, such as what its encoding can carry.
 
 A point validates itself when it is created, and raises one error that lists every
 inconsistency. Your subclass adds where the value is stored. It overrides `readable` and
@@ -255,9 +265,15 @@ until_stable, when=...)` schedules extra reads of those dependent points:
   one. A failed read neither ends it nor counts.
 - `when` limits the trigger to a value that rises or one that falls.
 
-If `after` is `None`, a refresh triggered by a write waits `Timing.read_back_delay(point)`. That
-is the point's `read_back_after`, or the device's `Timing.read_back_after` when the point has
-none. A refresh triggered by a change runs at once.
+If `after` is `None`, a refresh triggered by a write waits the device's
+`Timing.read_back_after`, and one triggered by a change runs at once. `Timing.on_write_delay(point)`
+gives the wait after a write. The written point itself is always read back after
+`Timing.read_back_after`, which `Timing.written_point_delay(point)` gives, whatever its `on_write`
+says.
+
+`select(points, targets)` gives the points a refresh names: for keys, in the order given, and a
+`KeyError` naming every key that none of the points has; for `Labels`, every point that carries
+them, in the order of the points.
 
 ### Scheduling
 
@@ -297,11 +313,12 @@ Three rules hold throughout:
   counted as offline, it makes every polled key due as if it had never been read, and drops
   pending refreshes and retries. Going offline and coming back online are each logged once, at
   INFO level.
-- **A silent device is not asked again and again.** A `Breaker` refuses requests for a pause
-  after a number of unanswered requests in a row, then lets one probe through. `attempt()`
-  returns a handle for one request, on which you report its outcome. Used as a context manager,
-  it releases the probe if no outcome was reported, so a cancelled request does not block later
-  ones. With a `retry`, the pauses are its delays, and once it gives up (`gave_up`) nothing goes
+- **A silent device is not asked again and again.** A `CircuitBreaker(after=, retry=)` opens
+  after `after` unanswered requests in a row; each pause is `retry`'s next delay, after which
+  one probe goes through. Each device keeps its own `Breaker` of these settings. `attempt()`
+  returns a handle for one request, or None while the breaker refuses it; report the outcome on
+  the handle. Used as a context manager, it releases the probe if no outcome was reported, so a
+  cancelled request does not block later ones. Once the retry gives up (`gave_up`), nothing goes
   through until `reset()`, as when the device is connected afresh. Before letting a probe go,
   ask `await retry.ready()`; if it says no, `postpone(now)` waits the same pause again.
 
@@ -310,34 +327,46 @@ Three rules hold throughout:
 These objects only make decisions; your protocol code asks them and acts:
 
 ```python
-from event_connect import Attempts, CircuitBreaker, Exponential, Fixed, Jitter, Retry, Steps, Within
+from event_connect import NO_RETRY, Attempts, CircuitBreaker, Exponential, Fixed, Jitter, Retry, Steps, Within
 
-busy = Retry(wait=Exponential(0.2, factor=2), stop=Attempts(4))                     # a busy reply
-no_data_yet = Retry(wait=Steps(0.5, then=Fixed(1)), stop=Within(7.5))               # a gateway with no data yet
-silent = CircuitBreaker(after=3, pause=Jitter(Exponential(10, factor=2, max=120)))  # a device that stopped answering
-reconnect = CircuitBreaker(after=3, retry=Retry(Exponential(2, max=10), Attempts(8)))  # ask again, 8 times
+busy = Retry(wait=Exponential(0.2, factor=2), stop=Attempts(4))        # a busy reply
+no_data_yet = Retry(wait=Steps(0.5, then=Fixed(1)), stop=Within(7.5))  # a gateway with no data yet
+silent = CircuitBreaker(after=3, retry=Retry(Jitter(Exponential(10, factor=2, max=120))))  # ask again for ever
+reconnect = CircuitBreaker(after=3, retry=Retry(Exponential(2, max=10), Attempts(8)))  # 7 probes, then give up
+once = CircuitBreaker(after=1, retry=NO_RETRY)                         # never again until reset()
 
 assert busy.next_delay(attempts=1, elapsed=0.0) == 0.2  # None once it is time to give up
 assert Retry(Fixed(10)).next_delay(attempts=1000, elapsed=86400.0) == 10  # no stop: never gives up
 ```
 
-A retry that checks something before each try is a subclass with its own `ready`:
+A breaker's retry counts openings, not requests: the first opening is the `after` unanswered
+requests, and each later one an unanswered probe. `Attempts(8)` therefore gives up at the eighth
+opening, after seven probes.
+
+A retry that checks something before each try is a subclass with its own `ready`. It is frozen,
+like every `Retry`, so it asks something outside itself:
 
 ```python
+import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from event_connect import Exponential, Retry
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class WhenOnline(Retry):
-    online: bool = True
+    online: Callable[[], bool]  # your own check: a ping, the OS, the app
 
     async def ready(self) -> bool:
-        return self.online             # ask your own check: a ping, the OS, the app
+        return self.online()
 
 
-retry = WhenOnline(Exponential(2, max=10), online=False)
+network = {"up": False}
+retry = WhenOnline(Exponential(2, max=10), online=lambda: network["up"])
+assert not asyncio.run(retry.ready())
+network["up"] = True
+assert asyncio.run(retry.ready())
 ```
 
 | Part | Decides |
@@ -345,10 +374,10 @@ retry = WhenOnline(Exponential(2, max=10), online=False)
 | `Fixed(s)`, `Exponential(start, factor, max)`, `Steps(a, b, ..., then=)`, `Jitter(wait, spread)` | how long to wait before the next try |
 | `Attempts(n)`, `Within(s)`, combined with `\|` | when to give up |
 | `Retry(wait, stop)` | the delay before each retry, until the stop condition is met; without `stop`, forever |
-| `CircuitBreaker(after, pause, retry)` | when to stop asking a silent device, for how long, and when to let one probe through |
+| `CircuitBreaker(after=, retry=)` | when to stop asking a silent device, and when to let one probe through |
 
-Make these policies part of your device definition, with defaults that users of your client can
-override.
+Write these policies out where your device is defined. A `CircuitBreaker` takes both its
+settings by name, and has no default for either.
 
 ## Measuring a device
 
@@ -376,12 +405,15 @@ Everything is imported from `event_connect`, and test support from `event_connec
 - `Key[T]`: the typed name of a point. `is_key()` and `is_state_type()` check a value and a type.
 - `Point[T]`: the base class for your points.
 - `PollRate`, `Limits`, `Unit`, `WriteKind`, `Pulse`: parts of a point.
+- `WriteRange`: the values a point can be written with, from `Point.write_range()`.
 - `Transform`, `Transforms`: conversions between the device's value and the value shown.
-- `Certainty`: how certain it is that a point's address, conversion and meaning are right.
+- `Certainty`: how certain it is that a point is what it says, as its `certainty` field.
 - `VALUE_TYPES`, `is_instance()`: the types a value may have, and a check for one.
 
 **Values**
 - `DataValue[T]`: a value with its `Quality`, the time it was read, and the raw reply.
+  `Quality.shows_a_value` says whether there is something to show: the value, or that the device
+  has no reading.
 - `Value`: the type of a point's value.
 - `stale()`: the previous value, marked stale, for use when a read fails.
 

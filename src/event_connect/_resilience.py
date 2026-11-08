@@ -210,20 +210,21 @@ NO_RETRY = Retry(Fixed(0), Attempts(1))
 # ========================================================================= circuit breaker
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CircuitBreaker:
-    """Stop asking a device that has left `after` requests in a row unanswered, for a `pause`
-    that grows by `pause`'s own rule each time it opens again; then let one request through as a
-    probe, which closes it if answered and opens it again if not.
+    """Stop asking a device that has left `after` requests in a row unanswered; each pause is
+    `retry`'s next delay, then one request goes through as a probe, which closes the breaker if
+    answered and opens it again if not.
 
-    With a `retry`, each pause is its next delay instead, counted in openings and timed from the
-    first since the last answer; when it gives up, the breaker stays open until it is reset.
+    `retry` counts openings, the first being the `after` unanswered requests and each later one
+    an unanswered probe, and times them from the first opening since the last answer: a stop of
+    `Attempts(n)` gives up at the nth opening, after n - 1 probes. Once it gives up, as
+    `NO_RETRY` does at the first, the breaker stays open until it is reset.
 
     The settings only: each device keeps its own `Breaker` of them.
     """
-    after: int = 3
-    pause: Wait = field(default_factory=lambda: Fixed(60.0))
-    retry: Retry | None = None
+    after: int
+    retry: Retry
 
     def __post_init__(self) -> None:
         if self.after < 1:
@@ -236,23 +237,21 @@ class CircuitBreaker:
 
 class Breaker:
     """The state of one device's circuit breaker: closed, open until a time, or letting a probe
-    through. It is told every request's outcome, and asked before each whether to send it."""
+    through. Each request goes through `attempt()`, which is told the request's outcome."""
 
     def __init__(self, settings: CircuitBreaker) -> None:
         self._settings = settings
-        self._unanswered = 0
+        self._in_a_row = 0
         self._openings = 0
         self._first_opened_at: float | None = None
         self._pause = 0.0
         self._open_until: float | None = None
         self._probing = False
-        self.opened = 0
-        """How many times it has opened."""
 
     @property
     def unanswered_in_a_row(self) -> int:
         """Requests left unanswered since the last answer."""
-        return self._unanswered
+        return self._in_a_row
 
     @property
     def is_open(self) -> bool:
@@ -274,28 +273,21 @@ class Breaker:
         return 0.0 if self._open_until is None else max(0.0, self._open_until - now)
 
     def attempt(self, now: float) -> Attempt | None:
-        """One request, if it may be sent now; None if not. Used as a context manager, it
-        releases a probe whose outcome it was never told, as when the request was cancelled."""
+        """One request, if it may be sent now; None if not.
+
+        Always while closed; once a pause is over, one probe, and nothing more until its
+        outcome is told. Used as a context manager, it releases a probe whose outcome it was
+        never told, as when the request was cancelled.
+        """
         probe = self.is_open
-        return Attempt(self, probe) if self.allows(now) else None
-
-    def allows(self, now: float) -> bool:
-        """Whether a request may be sent now: always while closed; once the pause is over, one
-        probe, and nothing more until its outcome is told."""
-        if self._open_until is None:
-            return True
-        if self._probing or now < self._open_until:
-            return False
-        self._probing = True
-        return True
-
-    def answered(self) -> None:
-        """Note an answer: the breaker closes."""
-        self.reset()
+        if not self._allows(now):
+            return None
+        return Attempt(probe=probe, answered=self.reset, unanswered=self._unanswered,
+                       released=self._released)
 
     def reset(self) -> None:
-        """Close the breaker without an answer, as when the device is connected afresh."""
-        self._unanswered = 0
+        """Close the breaker, as on an answer, or when the device is connected afresh."""
+        self._in_a_row = 0
         self._openings = 0
         self._first_opened_at = None
         self._open_until = None
@@ -309,54 +301,66 @@ class Breaker:
         self._probing = False
         self._open_until = now + self._pause
 
-    def released(self) -> None:
-        """Note that a request let through was not sent after all, or its outcome is unknown, as
-        when it was cancelled: a probe may go again, and nothing else changes."""
+    def _allows(self, now: float) -> bool:
+        if self._open_until is None:
+            return True
+        if self._probing or now < self._open_until:
+            return False
+        self._probing = True
+        return True
+
+    def _released(self) -> None:
         self._probing = False
 
-    def unanswered(self, now: float) -> None:
-        """Note a request left unanswered: the breaker opens after `after` in a row, or at once
-        after a probe."""
-        self._unanswered += 1
-        if self._probing or self._unanswered >= self._settings.after:
+    def _unanswered(self, now: float) -> None:
+        self._in_a_row += 1
+        if self._probing or self._in_a_row >= self._settings.after:
             self._probing = False
             self._openings += 1
-            self.opened += 1
             if self._first_opened_at is None:
                 self._first_opened_at = now
             self._pause = self._next_pause(now)
             self._open_until = now + self._pause
 
     def _next_pause(self, now: float) -> float:
-        retry = self._settings.retry
-        if retry is None:
-            return self._settings.pause.delay(self._openings)
         assert self._first_opened_at is not None
-        delay = retry.next_delay(self._openings, now - self._first_opened_at)
+        delay = self._settings.retry.next_delay(self._openings, now - self._first_opened_at)
         return math.inf if delay is None else delay
 
 
 class Attempt:
     """One request a `Breaker` let through, to be told its outcome."""
 
-    def __init__(self, breaker: Breaker, probe: bool) -> None:
-        self._breaker = breaker
+    def __init__(self, *, probe: bool, answered: Callable[[], None],
+                 unanswered: Callable[[float], None], released: Callable[[], None]) -> None:
+        """Tie the request to what its breaker does on each outcome.
+
+        Args:
+            probe: whether it is the one request let through an open breaker.
+            answered: called when it is answered.
+            unanswered: called, with the monotonic time, when it is left unanswered.
+            released: called on leaving a probe whose outcome was never told.
+        """
         self._probe = probe
+        self._answered = answered
+        self._unanswered = unanswered
+        self._released = released
         self._told = False
 
     def answered(self) -> None:
-        """The request was answered."""
+        """The request was answered: the breaker closes."""
         self._told = True
-        self._breaker.answered()
+        self._answered()
 
     def unanswered(self, now: float) -> None:
-        """The request was left unanswered."""
+        """The request was left unanswered: the breaker opens after `after` in a row, or at once
+        after a probe."""
         self._told = True
-        self._breaker.unanswered(now)
+        self._unanswered(now)
 
     def __enter__(self) -> Attempt:
         return self
 
     def __exit__(self, *exc: object) -> None:
         if self._probe and not self._told:
-            self._breaker.released()
+            self._released()

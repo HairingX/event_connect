@@ -6,12 +6,14 @@ import math
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
 from event_connect import (
     NO_RETRY,
     Attempts,
+    Breaker,
     CircuitBreaker,
     Exponential,
     Fixed,
@@ -22,6 +24,29 @@ from event_connect import (
     Wait,
     Within,
 )
+
+
+
+def _unanswered(breaker: Breaker, now: float) -> None:
+    """Send one request through `breaker`, which is let through, and leave it unanswered."""
+    attempt = breaker.attempt(now)
+    assert attempt is not None, f"no request was let through at {now}"
+    with attempt:
+        attempt.unanswered(now)
+
+
+def _answered(breaker: Breaker, now: float) -> None:
+    """Send one request through `breaker`, which is let through, and answer it."""
+    attempt = breaker.attempt(now)
+    assert attempt is not None, f"no request was let through at {now}"
+    with attempt:
+        attempt.answered()
+
+
+def _allows(breaker: Breaker, now: float) -> bool:
+    """Whether `breaker` lets a request through at `now`, holding it untold as a probe would be."""
+    return breaker.attempt(now) is not None
+
 
 # =================================================================================== waits
 
@@ -60,11 +85,10 @@ def test_a_breaker_asks_again_at_its_max_after_hours_of_silence() -> None:
     breaker = CircuitBreaker(after=3, retry=Retry(Exponential(2.0, max=10.0))).breaker()
     now = 0.0
     for _ in range(3):
-        breaker.unanswered(now)
+        _unanswered(breaker, now)
     for _ in range(2000):
         now += breaker.open_for(now)
-        assert breaker.allows(now)
-        breaker.unanswered(now)
+        _unanswered(breaker, now)
     assert breaker.openings == 2001 and breaker.open_for(now) == 10.0
 
 
@@ -97,7 +121,7 @@ def test_every_wait_is_a_wait() -> None:
     lambda: Jitter(Fixed(1), spread=2),
     lambda: Attempts(0),
     lambda: Within(-1),
-    lambda: CircuitBreaker(after=0),
+    lambda: CircuitBreaker(after=0, retry=NO_RETRY),
 ])
 def test_a_part_that_cannot_be_meant_is_refused(build: Callable[[], object]) -> None:
     with pytest.raises(ValueError):
@@ -151,73 +175,79 @@ def test_a_retry_is_ready_unless_it_says_otherwise() -> None:
 # ========================================================================= circuit breaker
 
 
+@pytest.mark.parametrize("args,fields", [
+    ((), {"after": 3}),
+    ((), {"retry": NO_RETRY}),
+    ((3, NO_RETRY), {}),
+])
+def test_a_breaker_is_given_every_setting_by_name(args: tuple[Any, ...], fields: dict[str, Any]) -> None:
+    with pytest.raises(TypeError):
+        CircuitBreaker(*args, **fields)
+
+
+def test_a_breaker_has_one_count_of_openings_and_hides_its_bookkeeping() -> None:
+    breaker = CircuitBreaker(after=1, retry=NO_RETRY).breaker()
+    for name in ("opened", "allows", "answered", "unanswered", "released"):
+        assert not hasattr(breaker, name), name
+
+
 def test_a_breaker_lets_everything_through_while_the_device_answers() -> None:
-    breaker = CircuitBreaker(after=3).breaker()
-    breaker.unanswered(0)
-    breaker.answered()
-    breaker.unanswered(1)
-    breaker.unanswered(2)
-    assert breaker.allows(2) and not breaker.is_open
+    breaker = CircuitBreaker(after=3, retry=NO_RETRY).breaker()
+    _unanswered(breaker, 0)
+    _answered(breaker, 1)
+    _unanswered(breaker, 1)
+    _unanswered(breaker, 2)
+    assert _allows(breaker, 2) and not breaker.is_open
 
 
 def test_a_breaker_opens_after_that_many_unanswered_in_a_row() -> None:
-    breaker = CircuitBreaker(after=3, pause=Fixed(60)).breaker()
+    breaker = CircuitBreaker(after=3, retry=Retry(Fixed(60))).breaker()
     for now in (0, 1, 2):
-        breaker.unanswered(now)
-    assert breaker.is_open and not breaker.allows(30) and breaker.open_for(30) == 32
+        _unanswered(breaker, now)
+    assert breaker.is_open and not _allows(breaker, 30) and breaker.open_for(30) == 32
 
 
 def test_after_its_pause_a_breaker_lets_one_probe_through() -> None:
-    breaker = CircuitBreaker(after=1, pause=Fixed(10)).breaker()
-    breaker.unanswered(0)
-    assert breaker.allows(10)
-    assert not breaker.allows(10), "a second request went through beside the probe"
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
+    _unanswered(breaker, 0)
+    assert _allows(breaker, 10)
+    assert not _allows(breaker, 10), "a second request went through beside the probe"
 
 
 def test_an_answered_probe_closes_the_breaker() -> None:
-    breaker = CircuitBreaker(after=1, pause=Fixed(10)).breaker()
-    breaker.unanswered(0)
-    breaker.allows(10)
-    breaker.answered()
-    assert not breaker.is_open and breaker.allows(10) and breaker.allows(10)
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
+    _unanswered(breaker, 0)
+    _answered(breaker, 10)
+    assert not breaker.is_open and _allows(breaker, 10) and _allows(breaker, 10)
 
 
 def test_an_unanswered_probe_opens_the_breaker_again_for_a_growing_pause() -> None:
-    breaker = CircuitBreaker(after=3, pause=Exponential(10, factor=2)).breaker()
+    breaker = CircuitBreaker(after=3, retry=Retry(Exponential(10, factor=2))).breaker()
     for now in (0, 1, 2):
-        breaker.unanswered(now)
+        _unanswered(breaker, now)
     assert breaker.open_for(2) == 10
-    breaker.allows(12)
-    breaker.unanswered(12)
-    assert breaker.open_for(12) == 20 and breaker.opened == 2
+    _unanswered(breaker, 12)
+    assert breaker.open_for(12) == 20 and breaker.openings == 2
 
 
 def test_each_device_keeps_its_own_breaker() -> None:
-    settings = CircuitBreaker(after=1)
+    settings = CircuitBreaker(after=1, retry=NO_RETRY)
     first, second = settings.breaker(), settings.breaker()
-    first.unanswered(0)
+    _unanswered(first, 0)
     assert first.is_open and not second.is_open
 
 
-def test_a_released_probe_lets_another_through() -> None:
-    breaker = CircuitBreaker(after=1, pause=Fixed(10)).breaker()
-    breaker.unanswered(0)
-    breaker.allows(10)
-    breaker.released()
-    assert breaker.allows(10) and breaker.is_open
-
-
 def test_a_breaker_counts_the_unanswered_since_the_last_answer() -> None:
-    breaker = CircuitBreaker(after=5).breaker()
-    breaker.unanswered(0)
-    breaker.unanswered(1)
+    breaker = CircuitBreaker(after=5, retry=NO_RETRY).breaker()
+    _unanswered(breaker, 0)
+    _unanswered(breaker, 1)
     assert breaker.unanswered_in_a_row == 2
-    breaker.answered()
+    _answered(breaker, 2)
     assert breaker.unanswered_in_a_row == 0
 
 
 def test_an_attempt_tells_the_breaker_its_outcome() -> None:
-    breaker = CircuitBreaker(after=1, pause=Fixed(10)).breaker()
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
     attempt = breaker.attempt(0)
     assert attempt is not None
     with attempt:
@@ -226,13 +256,14 @@ def test_an_attempt_tells_the_breaker_its_outcome() -> None:
 
 
 def test_a_probe_whose_outcome_is_never_told_is_released() -> None:
-    breaker = CircuitBreaker(after=1, pause=Fixed(10)).breaker()
-    breaker.unanswered(0)
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
+    _unanswered(breaker, 0)
     with pytest.raises(KeyboardInterrupt):
         attempt = breaker.attempt(10)
         assert attempt is not None
         with attempt:
             raise KeyboardInterrupt
+    assert breaker.is_open
     probe = breaker.attempt(10)
     assert probe is not None
     with probe:
@@ -240,47 +271,65 @@ def test_a_probe_whose_outcome_is_never_told_is_released() -> None:
     assert not breaker.is_open
 
 
-def test_with_a_retry_each_pause_is_its_next_delay_timed_from_the_first_opening() -> None:
-    breaker = CircuitBreaker(after=1, pause=Fixed(60), retry=Retry(Exponential(2), Within(5))).breaker()
-    breaker.unanswered(100)
+def test_a_request_let_through_a_closed_breaker_releases_no_probe() -> None:
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
+    before = breaker.attempt(0)
+    assert before is not None
+    _unanswered(breaker, 0)
+    assert _allows(breaker, 10)
+    with before:
+        pass
+    assert not _allows(breaker, 10), "leaving a request sent while closed let a second probe through"
+
+
+def test_each_pause_is_the_retry_s_next_delay_timed_from_the_first_opening() -> None:
+    breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2), Within(5))).breaker()
+    _unanswered(breaker, 100)
     assert breaker.open_for(100) == 2
-    breaker.allows(102)
-    breaker.unanswered(102)
+    _unanswered(breaker, 102)
     assert breaker.open_for(102) == 4 and breaker.openings == 2
-    breaker.allows(106)
-    breaker.unanswered(106)
+    _unanswered(breaker, 106)
     assert breaker.gave_up and breaker.open_for(106) == math.inf
+
+
+def test_attempts_in_a_breaker_s_retry_count_openings_so_n_give_n_minus_one_probes() -> None:
+    breaker = CircuitBreaker(after=3, retry=Retry(Exponential(2, max=10), Attempts(8))).breaker()
+    now, sent, probes = 0.0, 0, 0
+    while not breaker.gave_up:
+        now += breaker.open_for(now)
+        probes += breaker.is_open
+        sent += 1
+        _unanswered(breaker, now)
+    assert (sent, probes, breaker.openings) == (10, 7, 8)
 
 
 def test_a_breaker_whose_retry_gave_up_lets_nothing_through_until_reset() -> None:
     breaker = CircuitBreaker(after=1, retry=NO_RETRY).breaker()
-    breaker.unanswered(0)
-    assert breaker.gave_up and not breaker.allows(10 ** 9) and breaker.attempt(10 ** 9) is None
+    _unanswered(breaker, 0)
+    assert breaker.gave_up and breaker.attempt(10 ** 9) is None
     breaker.reset()
-    assert not breaker.is_open and not breaker.gave_up and breaker.allows(10 ** 9)
+    assert not breaker.is_open and not breaker.gave_up and _allows(breaker, 10 ** 9)
 
 
 def test_a_reset_starts_the_retry_over() -> None:
     breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2))).breaker()
-    breaker.unanswered(0)
-    breaker.allows(2)
-    breaker.unanswered(2)
+    _unanswered(breaker, 0)
+    _unanswered(breaker, 2)
     breaker.reset()
-    breaker.unanswered(50)
+    _unanswered(breaker, 50)
     assert breaker.open_for(50) == 2 and breaker.openings == 1
 
 
 def test_a_postponed_probe_waits_the_same_pause_again_without_counting_an_opening() -> None:
     breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2))).breaker()
-    breaker.unanswered(0)
-    breaker.allows(2)
-    breaker.unanswered(2)
-    assert breaker.allows(6)
+    _unanswered(breaker, 0)
+    _unanswered(breaker, 2)
+    assert _allows(breaker, 6)
     breaker.postpone(6)
-    assert not breaker.allows(9) and breaker.open_for(6) == 4 and breaker.openings == 2 and breaker.allows(10)
+    assert not _allows(breaker, 9) and breaker.open_for(6) == 4 and breaker.openings == 2 and _allows(breaker, 10)
 
 
 def test_postponing_a_closed_breaker_changes_nothing() -> None:
-    breaker = CircuitBreaker(after=1).breaker()
+    breaker = CircuitBreaker(after=1, retry=NO_RETRY).breaker()
     breaker.postpone(0)
-    assert not breaker.is_open and breaker.allows(0)
+    assert not breaker.is_open and _allows(breaker, 0)

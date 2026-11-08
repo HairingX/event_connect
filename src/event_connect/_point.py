@@ -2,7 +2,6 @@
 are encoded, which each protocol adds."""
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field, replace
 from datetime import date, datetime, time
@@ -10,6 +9,7 @@ from enum import Enum, IntEnum, auto
 from types import MappingProxyType
 from typing import Any
 
+from ._certainty import Certainty
 from ._key import Key, is_key, is_state_type
 from ._unit import Unit
 
@@ -107,11 +107,21 @@ def selector(targets: Labels | Sequence[str]) -> Selector:
 
 
 def select[P: Point[Any]](points: Sequence[P], targets: Selector) -> tuple[P, ...]:
-    """The points of `points` that `targets` names, in the order of `points`."""
+    """The points of `points` that `targets` names: for keys, in the order given; for labels,
+    every point carrying them, in the order of `points`.
+
+    Raises:
+        KeyError: naming every key that none of `points` has.
+    """
     if isinstance(targets, Labels):
         return tuple(point for point in points if targets.matches(point.labels))
-    wanted = set(targets)
-    return tuple(point for point in points if point.key in wanted)
+    by_key: dict[str, P] = {}
+    for point in points:
+        by_key.setdefault(point.key, point)
+    unknown = [key for key in targets if key not in by_key]
+    if unknown:
+        raise KeyError("unknown key(s): " + ", ".join(repr(key) for key in unknown))
+    return tuple(by_key[key] for key in targets)
 
 
 # ======================================================================= behaviour parts
@@ -131,12 +141,40 @@ class Limits:
             raise ValueError(f"step must be positive, got {self.step}")
 
     def problem(self, value: float) -> str | None:
-        """Why `value` may not be written, or None if it may."""
+        """Why `value` may not be written, or None if it may: below `min`, above `max`, or not a
+        whole number of `step`s from `min` (from 0 without one)."""
         if self.min is not None and value < self.min:
             return f"{value} is below the minimum {self.min}"
         if self.max is not None and value > self.max:
             return f"{value} is above the maximum {self.max}"
+        if self.step is not None:
+            base = self.min if self.min is not None else 0
+            steps = (value - base) / self.step
+            # A float step such as 0.1 never divides exactly; a value a rounding error off a step
+            # is on it.
+            if abs(steps - round(steps)) > _STEP_TOLERANCE * max(1.0, abs(steps)):
+                return f"{value} is not a multiple of step {self.step} from {base}"
         return None
+
+
+_STEP_TOLERANCE = 1e-9
+"""How far, relative to the number of steps, a value may be off a step and still count as on it."""
+
+
+@dataclass(frozen=True)
+class WriteRange:
+    """The lowest and highest value a point can be written with, and the step between values, in
+    the units a user sees."""
+    min: float
+    max: float
+    step: float | None
+    """None: any value from `min` to `max`."""
+
+    def __post_init__(self) -> None:
+        if self.min > self.max:
+            raise ValueError(f"min {self.min} is greater than max {self.max}")
+        if self.step is not None and not self.step > 0:
+            raise ValueError(f"step must be positive, got {self.step}")
 
 
 @dataclass(frozen=True)
@@ -222,11 +260,12 @@ class Point[T]:
     """Changes smaller than this, from the last value reported, are not reported."""
     write_kind: WriteKind = WriteKind.STATE
     pulse: Pulse[T] | None = None
-    read_back_after: float | None = None
-    """Seconds from a write until a read shows it, where this point differs from its device."""
     on_write: Refresh | None = None
     on_change: Refresh | None = None
     labels: Mapping[str, str | int] = field(default_factory=lambda: MappingProxyType({}))
+    certainty: Certainty = Certainty.REPORTED
+    """How certain it is that the point is what it says; REPORTED until it has been read on a
+    unit."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "labels", MappingProxyType(dict(self.labels)))
@@ -254,6 +293,21 @@ class Point[T]:
         if not is_state_type(value_type):
             return ()
         return tuple(value_type)
+
+    def write_range(self) -> WriteRange | None:
+        """The values the point can be written with, from its `limits`; None if it cannot be
+        written, or its limits lack a `min` or a `max`.
+
+        Without a `step` in its limits, an int point steps by 1, and a float point by nothing.
+        A protocol overrides it where it knows more, such as what its encoding can carry.
+        """
+        limits = self.limits
+        if not self.writable or limits is None or limits.min is None or limits.max is None:
+            return None
+        step = limits.step
+        if step is None and self.key.type is int:
+            step = 1
+        return WriteRange(limits.min, limits.max, step)
 
     def problems(self) -> list[str]:
         """Everything wrong with the point, so one error names every mistake at once.
@@ -316,11 +370,6 @@ def _read_problems(point: Point[Any]) -> list[str]:
 
 def _write_problems(point: Point[Any]) -> list[str]:
     found: list[str] = []
-    if point.read_back_after is not None:
-        if not point.writable:
-            found.append("read_back_after describes writes, but it has no write side")
-        if not (math.isfinite(point.read_back_after) and point.read_back_after >= 0):
-            found.append(f"read_back_after must be a finite number >= 0, got {point.read_back_after}")
     if point.limits is not None and not point.writable:
         found.append("limits describe writes, but it has no write side")
     if point.write_kind is WriteKind.COMMAND and not point.writable:
@@ -334,9 +383,6 @@ def _write_problems(point: Point[Any]) -> list[str]:
             found.append("on_write re-reads after a write, but it has no write side")
         if point.on_write.when is not Change.ANY:
             found.append("on_write has no change to wait for; `when` belongs to on_change")
-        after = point.on_write.after if point.on_write.after is not None else point.read_back_after
-        if point.on_write.until_stable is not None and after is not None and not after > 0:
-            found.append("on_write re-reads until stable, which needs a positive after to re-read at")
     return found
 
 
