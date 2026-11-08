@@ -102,8 +102,8 @@ from dataclasses import KW_ONLY, dataclass
 from typing import Any
 
 from event_connect import (
-    CircuitBreaker, Clock, DataValue, Key, Passes, Point, Quality, Reachability, Status,
-    StatusBoard, Subscriptions, SystemClock, Timing, ValueCallback, stale,
+    CircuitBreaker, Clock, DataValue, Fixed, Key, Passes, Point, Quality, Reachability, Retry,
+    Status, StatusBoard, Subscriptions, SystemClock, Timing, ValueCallback, stale,
 )
 from event_connect.testing import FakeClock
 
@@ -129,8 +129,10 @@ TEMPERATURE = Key("temperature", float)
 POINTS = [RegisterPoint(TEMPERATURE, register=1)]
 
 # 2. Timing: the interval for each poll rate, and how long the device may be silent before
-#    it counts as offline.
+#    it counts as offline. The breaker: after how many unanswered requests in a row to stop
+#    asking, and when to ask again.
 TIMING = Timing(offline_after=30.0)
+BREAKER = CircuitBreaker(after=2, retry=Retry(Fixed(10.0)))
 
 Send = Callable[[Sequence[int]], Awaitable[Mapping[int, int] | None]]
 
@@ -146,7 +148,7 @@ class Client:
         self._subscriptions = Subscriptions()
         self._reachability = Reachability(self._clock, TIMING.offline_after, name="The device")
         self._statuses = StatusBoard(self._clock)
-        self._breaker = CircuitBreaker(after=2).breaker()
+        self._breaker = BREAKER.breaker()
         self._passes = Passes()
 
     # 3. Subscribing: a subscribed key is polled, and its subscriber is told when the
@@ -176,22 +178,24 @@ class Client:
             self._subscriptions.report(point, data)
             self._scheduler.record(point.key, data, success=answer is not None)
 
-    # 5. Sending a request: skipped while the circuit breaker is open. Every outcome,
-    #    including a skipped request, is reported to the breaker and to Reachability, and
-    #    the resulting online state is published as Status.CONNECTED.
+    # 5. Sending a request: skipped while the circuit breaker is open. Every outcome is
+    #    reported to the breaker, and to Reachability, a skipped request among them; whether
+    #    the device now counts as online is published as Status.CONNECTED.
     async def _request(self, registers: Sequence[int]) -> Mapping[int, int] | None:
+        answer: Mapping[int, int] | None = None
         attempt = self._breaker.attempt(self._clock.monotonic())
-        if attempt is None:
-            self._statuses.set(Status.CONNECTED, self._reachability.unanswered())
-            return None
-        with attempt:
-            answer = await self._send(registers)
-            if answer is None:
-                attempt.unanswered(self._clock.monotonic())
-                self._statuses.set(Status.CONNECTED, self._reachability.unanswered())
-            else:
-                attempt.answered()
-                self._statuses.set(Status.CONNECTED, self._reachability.answered(self._scheduler))
+        if attempt is not None:
+            with attempt:
+                answer = await self._send(registers)
+                if answer is None:
+                    attempt.unanswered(self._clock.monotonic())
+                else:
+                    attempt.answered()
+        if answer is None:
+            self._reachability.unanswered()
+        else:
+            self._reachability.answered(self._scheduler)
+        self._statuses.set(Status.CONNECTED, self._reachability.reachable)
         return answer
 
 
@@ -297,11 +301,12 @@ Three rules hold throughout:
   counted as offline, it makes every polled key due as if it had never been read, and drops
   pending refreshes and retries. Going offline and coming back online are each logged once, at
   INFO level.
-- **A silent device is not asked again and again.** A `Breaker` refuses requests for a pause
-  after a number of unanswered requests in a row, then lets one probe through. `attempt()`
-  returns a handle for one request, on which you report its outcome. Used as a context manager,
-  it releases the probe if no outcome was reported, so a cancelled request does not block later
-  ones. With a `retry`, the pauses are its delays, and once it gives up (`gave_up`) nothing goes
+- **A silent device is not asked again and again.** A `CircuitBreaker(after=, retry=)` opens
+  after `after` unanswered requests in a row; each pause is `retry`'s next delay, after which
+  one probe goes through. Each device keeps its own `Breaker` of these settings. `attempt()`
+  returns a handle for one request, or None while the breaker refuses it; report the outcome on
+  the handle. Used as a context manager, it releases the probe if no outcome was reported, so a
+  cancelled request does not block later ones. Once the retry gives up (`gave_up`), nothing goes
   through until `reset()`, as when the device is connected afresh. Before letting a probe go,
   ask `await retry.ready()`; if it says no, `postpone(now)` waits the same pause again.
 
@@ -310,34 +315,46 @@ Three rules hold throughout:
 These objects only make decisions; your protocol code asks them and acts:
 
 ```python
-from event_connect import Attempts, CircuitBreaker, Exponential, Fixed, Jitter, Retry, Steps, Within
+from event_connect import NO_RETRY, Attempts, CircuitBreaker, Exponential, Fixed, Jitter, Retry, Steps, Within
 
-busy = Retry(wait=Exponential(0.2, factor=2), stop=Attempts(4))                     # a busy reply
-no_data_yet = Retry(wait=Steps(0.5, then=Fixed(1)), stop=Within(7.5))               # a gateway with no data yet
-silent = CircuitBreaker(after=3, pause=Jitter(Exponential(10, factor=2, max=120)))  # a device that stopped answering
-reconnect = CircuitBreaker(after=3, retry=Retry(Exponential(2, max=10), Attempts(8)))  # ask again, 8 times
+busy = Retry(wait=Exponential(0.2, factor=2), stop=Attempts(4))        # a busy reply
+no_data_yet = Retry(wait=Steps(0.5, then=Fixed(1)), stop=Within(7.5))  # a gateway with no data yet
+silent = CircuitBreaker(after=3, retry=Retry(Jitter(Exponential(10, factor=2, max=120))))  # ask again for ever
+reconnect = CircuitBreaker(after=3, retry=Retry(Exponential(2, max=10), Attempts(8)))  # 7 probes, then give up
+once = CircuitBreaker(after=1, retry=NO_RETRY)                         # never again until reset()
 
 assert busy.next_delay(attempts=1, elapsed=0.0) == 0.2  # None once it is time to give up
 assert Retry(Fixed(10)).next_delay(attempts=1000, elapsed=86400.0) == 10  # no stop: never gives up
 ```
 
-A retry that checks something before each try is a subclass with its own `ready`:
+A breaker's retry counts openings, not requests: the first opening is the `after` unanswered
+requests, and each later one an unanswered probe. `Attempts(8)` therefore gives up at the eighth
+opening, after seven probes.
+
+A retry that checks something before each try is a subclass with its own `ready`. It is frozen,
+like every `Retry`, so it asks something outside itself:
 
 ```python
+import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from event_connect import Exponential, Retry
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class WhenOnline(Retry):
-    online: bool = True
+    online: Callable[[], bool]  # your own check: a ping, the OS, the app
 
     async def ready(self) -> bool:
-        return self.online             # ask your own check: a ping, the OS, the app
+        return self.online()
 
 
-retry = WhenOnline(Exponential(2, max=10), online=False)
+network = {"up": False}
+retry = WhenOnline(Exponential(2, max=10), online=lambda: network["up"])
+assert not asyncio.run(retry.ready())
+network["up"] = True
+assert asyncio.run(retry.ready())
 ```
 
 | Part | Decides |
@@ -345,10 +362,10 @@ retry = WhenOnline(Exponential(2, max=10), online=False)
 | `Fixed(s)`, `Exponential(start, factor, max)`, `Steps(a, b, ..., then=)`, `Jitter(wait, spread)` | how long to wait before the next try |
 | `Attempts(n)`, `Within(s)`, combined with `\|` | when to give up |
 | `Retry(wait, stop)` | the delay before each retry, until the stop condition is met; without `stop`, forever |
-| `CircuitBreaker(after, pause, retry)` | when to stop asking a silent device, for how long, and when to let one probe through |
+| `CircuitBreaker(after=, retry=)` | when to stop asking a silent device, and when to let one probe through |
 
-Make these policies part of your device definition, with defaults that users of your client can
-override.
+Write these policies out where your device is defined. A `CircuitBreaker` takes both its
+settings by name, and has no default for either.
 
 ## Measuring a device
 

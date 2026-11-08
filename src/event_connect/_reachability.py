@@ -47,8 +47,8 @@ class Reachability:
             return 0.0
         return self._clock.monotonic() - self._silent_since
 
-    def answered(self, scheduler: Scheduler | None = None) -> bool:
-        """Note an answer, and return whether the device counts as answering: it does.
+    def answered(self, scheduler: Scheduler | None = None) -> None:
+        """Note an answer: the device counts as answering.
 
         Args:
             scheduler: made to read at once, if the device was silent, what failed meanwhile;
@@ -66,15 +66,13 @@ class Reachability:
         self._silent_since = None
         self._reachable = True
         self._lost = False
-        return True
 
-    def unanswered(self) -> bool:
-        """Note a request the device did not answer, and return whether it still counts as
-        answering."""
+    def unanswered(self) -> None:
+        """Note a request the device did not answer; once it has been silent for `offline_after`
+        seconds, it no longer counts as answering."""
         if self._silent_since is None:
             self._silent_since = self._clock.monotonic()
         if self._reachable and self.silent_for >= self._offline_after:
             self._reachable = False
             self._lost = True
             _LOGGER.info("%s stopped answering %.0f s ago", self.name, self.silent_for)
-        return self._reachable

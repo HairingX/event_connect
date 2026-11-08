@@ -17,9 +17,11 @@ def test_one_lost_answer_is_not_an_outage() -> None:
     clock = FakeClock()
     reachability = Reachability(clock, 30.0)
     reachability.answered()
-    assert reachability.unanswered() and reachability.silent
+    reachability.unanswered()
+    assert reachability.reachable and reachability.silent
     clock.advance(29.0)
-    assert reachability.unanswered()
+    reachability.unanswered()
+    assert reachability.reachable
 
 
 def test_silence_for_the_whole_period_is_an_outage() -> None:
@@ -28,8 +30,8 @@ def test_silence_for_the_whole_period_is_an_outage() -> None:
     reachability.answered()
     reachability.unanswered()
     clock.advance(30.0)
-    assert not reachability.unanswered()
-    assert reachability.silent_for == 30.0
+    reachability.unanswered()
+    assert not reachability.reachable and reachability.silent_for == 30.0
 
 
 def test_an_answer_ends_the_silence_at_once() -> None:
@@ -39,7 +41,8 @@ def test_an_answer_ends_the_silence_at_once() -> None:
     reachability.unanswered()
     clock.advance(30.0)
     reachability.unanswered()
-    assert reachability.answered() and not reachability.silent and reachability.silent_for == 0.0
+    reachability.answered()
+    assert reachability.reachable and not reachability.silent and reachability.silent_for == 0.0
 
 
 def test_the_silence_is_counted_from_the_first_unanswered_request_not_the_last_answer() -> None:
@@ -47,13 +50,20 @@ def test_the_silence_is_counted_from_the_first_unanswered_request_not_the_last_a
     reachability = Reachability(clock, 30.0)
     reachability.answered()
     clock.advance(900.0)
-    assert reachability.unanswered()
+    reachability.unanswered()
+    assert reachability.reachable
 
 
 def test_no_grace_counts_the_first_silence_as_an_outage() -> None:
     reachability = Reachability(FakeClock(), 0.0)
     reachability.answered()
-    assert not reachability.unanswered()
+    reachability.unanswered()
+    assert not reachability.reachable
+
+
+def test_noting_an_outcome_returns_nothing_as_reachable_says_it() -> None:
+    reachability = Reachability(FakeClock(), 30.0)
+    assert reachability.answered() is None and reachability.unanswered() is None
 
 
 def test_a_grace_that_cannot_be_meant_is_refused() -> None:
