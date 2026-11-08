@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol, cast, runtime_checkable
@@ -20,7 +21,10 @@ class Wait(Protocol):
     """How long to wait before a try, by how many tries came before it."""
 
     def delay(self, attempt: int) -> float:
-        """Seconds to wait before try number `attempt + 1`; `attempt` counts from 1."""
+        """Seconds to wait before try number `attempt + 1`; `attempt` counts from 1.
+
+        A number for every attempt, however many came before it: never raises.
+        """
         ...
 
 
@@ -57,9 +61,21 @@ class Exponential:
             _seconds("max", self.max)
 
     def delay(self, attempt: int) -> float:
-        """`start` times `factor` to the power of the tries before this one, capped at `max`."""
-        seconds = self.start * self.factor ** max(0, attempt - 1)
-        return seconds if self.max is None else min(seconds, self.max)
+        """`start` times `factor` to the power of the tries before this one, capped at `max`;
+        without `max`, at the largest float."""
+        cap = sys.float_info.max if self.max is None else self.max
+        if self.start == 0 or cap == 0:
+            return 0.0
+        exponent = max(0, attempt - 1)
+        # Compared as logarithms: the power itself overflows a float long before a try count
+        # stops growing.
+        if exponent * math.log(self.factor) >= math.log(cap / self.start):
+            return cap
+        try:
+            seconds = self.start * self.factor ** exponent
+        except OverflowError:  # the power alone, where `start` would have brought it under `cap`
+            return cap
+        return min(seconds, cap)
 
 
 @dataclass(frozen=True, init=False)

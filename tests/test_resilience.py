@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -31,6 +32,40 @@ def test_a_fixed_wait_is_the_same_every_time() -> None:
 
 def test_an_exponential_wait_grows_by_its_factor_up_to_its_max() -> None:
     assert [Exponential(0.5, factor=2, max=3).delay(n) for n in (1, 2, 3, 4, 5)] == [0.5, 1, 2, 3, 3]
+
+
+@pytest.mark.parametrize("wait", [
+    Exponential(2.0, max=10.0),
+    Exponential(2, factor=2, max=10),
+    Exponential(0.5, factor=3.0, max=0.5),
+    Steps(1, then=Exponential(2.0, max=10.0)),
+    Jitter(Exponential(2.0, max=10.0), rand=lambda: 1.0),
+])
+def test_a_wait_with_a_max_stays_at_it_however_many_tries_came_before(wait: Wait) -> None:
+    capped = wait.delay(50)
+    assert [wait.delay(n) for n in (1024, 1025, 2000, 10 ** 6)] == [capped] * 4
+
+
+def test_an_exponential_wait_without_a_max_grows_to_the_largest_float_and_no_further() -> None:
+    wait = Exponential(0.2)
+    assert wait.delay(1025) == wait.delay(10 ** 6) == sys.float_info.max
+
+
+def test_an_exponential_wait_from_nothing_or_to_nothing_is_zero() -> None:
+    assert Exponential(0, max=10).delay(10 ** 6) == 0
+    assert Exponential(2, max=0).delay(10 ** 6) == 0
+
+
+def test_a_breaker_asks_again_at_its_max_after_hours_of_silence() -> None:
+    breaker = CircuitBreaker(after=3, retry=Retry(Exponential(2.0, max=10.0))).breaker()
+    now = 0.0
+    for _ in range(3):
+        breaker.unanswered(now)
+    for _ in range(2000):
+        now += breaker.open_for(now)
+        assert breaker.allows(now)
+        breaker.unanswered(now)
+    assert breaker.openings == 2001 and breaker.open_for(now) == 10.0
 
 
 def test_steps_are_taken_in_turn_then_the_last_again() -> None:
