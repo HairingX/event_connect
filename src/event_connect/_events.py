@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -71,6 +71,16 @@ class Subscriptions:
     def forget(self, key: str) -> None:
         """Forget what `key` last reported, so its next value is news."""
         self._last_reported.pop(key, None)
+
+
+def should_poll(point: Point[Any], subscriptions: Subscriptions, polled: Collection[str]) -> bool:
+    """Whether anything wants `point` read on its schedule: the point itself (`poll_always`), its
+    `on_change` refresh, whose change only a read can see, a consumer that asked for it (its key
+    in `polled`), or a subscriber that polls. Never for a point that cannot be read."""
+    return point.readable and (point.poll_always
+                               or point.on_change is not None
+                               or point.key in polled
+                               or subscriptions.polled(point.key))
 
 
 def tell(subscriber: Subscriber, old: DataValue[Any] | None, new: DataValue[Any]) -> None:

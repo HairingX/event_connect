@@ -114,7 +114,7 @@ def test_a_fake_clock_moves_both_clocks_only_when_told() -> None:
 
 def test_the_package_imports_nothing_but_the_standard_library() -> None:
     root = Path(core.__file__).parent
-    allowed = {"__future__", "asyncio", "collections", "dataclasses", "datetime", "enum", "importlib", "logging", "math", "random", "statistics", "sys", "time",
+    allowed = {"__future__", "asyncio", "collections", "contextlib", "dataclasses", "datetime", "enum", "importlib", "logging", "math", "random", "statistics", "sys", "time",
                "types", "typing"}
     for path in root.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -142,3 +142,45 @@ def test_a_status_board_tells_its_subscribers_every_change_and_keeps_a_raising_o
     board.set(core.Status.CONNECTED, False)
     assert seen == [(None, False), (False, True)]
     assert board.value(core.Status.CONNECTED).value is False
+
+
+@pytest.mark.parametrize(("point", "polled", "subscribed", "expected"), [
+    (FakePoint(Key("p", int)), set[str](), False, False),
+    (FakePoint(Key("p", int), poll_always=True), set[str](), False, True),
+    (FakePoint(Key("p", int), on_change=core.Refresh(["q"])), set[str](), False, True),
+    (FakePoint(Key("p", int)), {"p"}, False, True),
+    (FakePoint(Key("p", int)), set[str](), True, True),
+    (FakePoint(Key("p", int), can_read=False, can_write=True), {"p"}, True, False),
+])
+def test_a_point_is_polled_when_it_says_so_triggers_a_refresh_or_a_consumer_asks_for_it(
+        point: FakePoint[int], polled: set[str], subscribed: bool, expected: bool) -> None:
+    subscriptions = Subscriptions()
+    if subscribed:
+        subscriptions.add(point.key, lambda _key, _old, _new: None, polls=True)
+    assert core.should_poll(point, subscriptions, polled) is expected
+
+
+def test_a_subscriber_that_does_not_poll_does_not_make_a_point_polled() -> None:
+    point = FakePoint(Key("p", int))
+    subscriptions = Subscriptions()
+    subscriptions.add(point.key, lambda _key, _old, _new: None, polls=False)
+    assert not core.should_poll(point, subscriptions, ())
+
+
+def test_a_held_status_stays_true_until_the_last_holder_leaves() -> None:
+    board = core.StatusBoard(FakeClock())
+    seen: list[bool] = []
+    board.subscribe(core.Status.WRITE_PENDING, lambda _status, _old, new: seen.append(new.value is True))
+    with board.holding(core.Status.WRITE_PENDING):
+        with board.holding(core.Status.WRITE_PENDING):
+            pass
+        assert board.value(core.Status.WRITE_PENDING).value is True
+    assert board.value(core.Status.WRITE_PENDING).value is False and seen == [False, True, False]
+
+
+def test_a_held_status_is_let_go_when_its_work_raises() -> None:
+    board = core.StatusBoard(FakeClock())
+    with pytest.raises(RuntimeError):
+        with board.holding(core.Status.WRITE_PENDING):
+            raise RuntimeError("the write failed")
+    assert board.value(core.Status.WRITE_PENDING).value is False

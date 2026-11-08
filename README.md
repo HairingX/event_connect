@@ -21,7 +21,7 @@ tested without a device.
 - Python 3.14 or later.
 - No dependencies outside the standard library.
 - Fully typed (`py.typed`).
-- Status: alpha. Until 1.0, a minor version may change the API.
+- Status: alpha. Until 1.0, only a new minor version may change the API.
 
 ## Installation
 
@@ -30,7 +30,7 @@ pip install event-connect
 ```
 
 In your package, require a range of versions up to the next one that may break the API, for
-example `event_connect>=0.3,<0.4`. [Versioning](#versioning) explains why.
+example `event_connect>=0.4.2,<0.5`. [Versioning](#versioning) explains why.
 
 ## Concepts
 
@@ -216,8 +216,10 @@ A real client also:
   `Timing.read_back_delay(point)`, and schedules the point's `on_write` refresh;
 - compares each new value with the last one using `changed(old, new, point.on_change.when)`,
   and schedules the point's `on_change` refresh when it has changed;
-- marks points with `poll_always` as polled, and keeps `set_polled` in step with
-  `Subscriptions.polled()` when a subscriber leaves;
+- keeps `set_polled` in step with `should_poll(point, subscriptions, polled)` for every point,
+  and again whenever a subscriber comes or leaves or a consumer asks for a point;
+- holds `Status.WRITE_PENDING` with `StatusBoard.holding()` while a write is in flight, so that
+  overlapping writes show as one;
 - passes `retry_after` to `record()` when its protocol wants a failed read retried sooner.
 
 ## How it works
@@ -396,6 +398,7 @@ Everything is imported from `event_connect`, and test support from `event_connec
 **Notifications**
 - `Subscriptions`, `Subscriber`, `ValueCallback`, `tell()`: subscribers to values and the calls
   that notify them.
+- `should_poll()`: whether anything wants a point read on its schedule.
 - `Status`, `StatusBoard`, `StatusCallback`: client state that is not a point, such as whether
   the device is connected.
 
@@ -425,8 +428,9 @@ Everything is imported from `event_connect`, and test support from `event_connec
 
 ## Versioning
 
-event_connect follows semantic versioning. Before 1.0, a minor version may break the API; from
-1.0 on, only a major version may.
+event_connect follows semantic versioning. Before 1.0, only a new minor version may break the
+API, and a patch fixes or adds; from 1.0 on, only a major version may break it, and a minor
+version adds.
 
 A Python environment holds one version of each package. An application that uses two packages
 built on event_connect therefore gets one copy of it, and that copy must satisfy both. If one of

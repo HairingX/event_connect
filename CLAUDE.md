@@ -22,8 +22,11 @@ a change sets off. Protocol packages build on it; how it works and how one is bu
 Assistant shares one copy of this package, so the versions must allow one copy to serve them all.
 - Semantic versioning, strictly. A patch fixes; a minor version adds and changes nothing that
   exists; only a major version may break something, and it is rare.
+- Until 1.0 the minor version takes the major's place: only a new `0.MINOR` may break something,
+  and a patch fixes or adds. A pull request that only adds is therefore not labelled `minor`.
 - What is to go is deprecated first, and removed only in the next major version.
-- A package built on this one requires a range, never one version: `event_connect>=1.2,<2`.
+- A package built on this one requires a range, never one version: `event_connect>=1.2,<2`, and
+  until 1.0 `event_connect>=0.4.2,<0.5`.
 - A new major version is released only once every package built on this one is ready for it.
 
 <!-- BEGIN HairingX/workflows: shared; edit it there -->

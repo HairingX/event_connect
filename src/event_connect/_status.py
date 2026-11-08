@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from enum import Enum, auto
 
 from ._clock import Clock
@@ -33,6 +34,7 @@ class StatusBoard:
         self._clock = clock
         self._values = {status: DataValue(False, Quality.GOOD, clock.now()) for status in Status}
         self._callbacks: dict[Status, list[StatusCallback]] = {status: [] for status in Status}
+        self._holders = {status: 0 for status in Status}
 
     def value(self, status: Status) -> DataValue[bool]:
         """What is known of `status` now."""
@@ -47,6 +49,11 @@ class StatusBoard:
         self._values[status] = new
         for callback in list(self._callbacks[status]):
             _tell(callback, status, old, new)
+
+    def holding(self, status: Status) -> AbstractContextManager[None]:
+        """Hold `status` True while inside; it turns False only when the last of those holding it
+        leaves, so that overlapping work, such as two writes at once, shows as one."""
+        return _Holding(self._holders, status, self.set)
 
     def subscribe(self, status: Status, callback: StatusCallback) -> Callable[[], None]:
         """Call `callback` on every change of `status`, starting with its current value; a
@@ -70,3 +77,19 @@ def _tell(callback: StatusCallback, status: Status, old: DataValue[bool] | None,
         callback(status, old, new)
     except Exception:
         _LOGGER.exception("a subscriber to %s raised", status)
+
+
+class _Holding(AbstractContextManager[None]):
+    def __init__(self, holders: dict[Status, int], status: Status, set_status: Callable[[Status, bool], None]) -> None:
+        self._holders = holders
+        self._status = status
+        self._set = set_status
+
+    def __enter__(self) -> None:
+        self._holders[self._status] += 1
+        self._set(self._status, True)
+
+    def __exit__(self, *exc: object) -> None:
+        self._holders[self._status] -= 1
+        if not self._holders[self._status]:
+            self._set(self._status, False)
