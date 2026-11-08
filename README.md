@@ -412,6 +412,8 @@ Everything is imported from `event_connect`, and test support from `event_connec
 
 **Values**
 - `DataValue[T]`: a value with its `Quality`, the time it was read, and the raw reply.
+  `Quality.shows_a_value` says whether there is something to show: the value, or that the device
+  has no reading.
 - `Value`: the type of a point's value.
 - `stale()`: the previous value, marked stale, for use when a read fails.
 

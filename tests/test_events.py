@@ -99,6 +99,17 @@ def test_a_stale_value_keeps_the_last_good_one_and_its_time() -> None:
     assert stale(None, later) == DataValue(None, Quality.STALE, later)
 
 
+@pytest.mark.parametrize("quality,shows", [
+    (Quality.GOOD, True),
+    (Quality.NO_DATA, True),
+    (Quality.STALE, True),
+    (Quality.OFFLINE, False),
+    (Quality.MISSING, False),
+])
+def test_a_value_shows_unless_its_device_or_point_is_gone(quality: Quality, shows: bool) -> None:
+    assert quality.shows_a_value is shows
+
+
 def test_the_system_clock_satisfies_the_protocol() -> None:
     clock: Clock = SystemClock()
     assert isinstance(clock, Clock) and clock.now().tzinfo is not None
