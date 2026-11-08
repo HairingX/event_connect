@@ -30,7 +30,7 @@ pip install event-connect
 ```
 
 In your package, require a range of versions up to the next one that may break the API, for
-example `event_connect>=0.4.2,<0.5`. [Versioning](#versioning) explains why.
+example `event_connect>=0.5,<0.6`. [Versioning](#versioning) explains why.
 
 ## Concepts
 
