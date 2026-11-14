@@ -799,3 +799,60 @@ def test_a_retry_is_read_even_for_a_key_nobody_polls() -> None:
     scheduler.record("a", None, success=False, retry_after=1.0)
     clock.advance(1.0)
     assert scheduler.due() == ["a"]
+
+
+# ================================================================================= gathering
+
+
+def _two_fast(clock: FakeClock, gap: float) -> Scheduler:
+    """`a` and `b` polled every 10 s, `b` first read `gap` seconds after `a`."""
+    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
+    _activate(scheduler, "a", "b")
+    scheduler.record("a", _dv(1), success=True)
+    clock.advance(gap)
+    scheduler.record("b", _dv(1), success=True)
+    return scheduler
+
+
+def test_keys_read_moments_apart_are_read_together_again() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.00002)
+    clock.advance(10.0 - 0.00002)
+    assert scheduler.due() == ["a", "b"]
+
+
+def test_a_key_read_with_others_takes_their_rhythm() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.5)
+    assert _tick(scheduler, clock, 9.5, {"a": (1, True), "b": (1, True)}) == ["a", "b"]
+    clock.advance(9.9)
+    assert scheduler.due() == []
+    clock.advance(0.1)
+    assert scheduler.due() == ["a", "b"]
+
+
+def test_a_key_due_more_than_a_second_later_waits_for_its_own_rhythm() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 1.5)
+    clock.advance(10.0 - 1.5)
+    assert scheduler.due() == ["a"]
+
+
+def test_nothing_is_read_ahead_of_its_rhythm_while_nothing_is_due() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.5)
+    clock.advance(9.0)
+    assert scheduler.due() == []
+
+
+def test_a_key_is_read_at_most_a_tenth_of_its_interval_ahead() -> None:
+    clock = FakeClock()
+    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 2.0})
+    scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
+    _activate(scheduler, "a", "b")
+    scheduler.record("a", _dv(1), success=True)
+    clock.advance(0.3)
+    scheduler.record("b", _dv(1), success=True)
+    clock.advance(2.0 - 0.3)
+    assert scheduler.due() == ["a"]
