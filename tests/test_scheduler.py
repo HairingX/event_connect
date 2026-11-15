@@ -885,3 +885,23 @@ def test_a_retry_just_before_its_rhythm_does_not_move_it() -> None:
     assert _tick(scheduler, clock, 0.0, {"a": (1, True)}) == ["a"]
     clock.advance(0.5)
     assert scheduler.due() == ["a", "b"]
+
+
+def test_keys_read_together_stay_together_however_long_it_runs() -> None:
+    """Each record takes a moment, as it does outside a test."""
+    clock = FakeClock()
+    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    keys = [f"k{n}" for n in range(30)]
+    scheduler.set_points([_point(key, PollRate.FAST) for key in keys])
+    _activate(scheduler, *keys)
+    reads: list[list[str]] = []
+    for _ in range(100):
+        due = scheduler.due()
+        reads.append(due)
+        for key in due:
+            clock.advance(0.00001)
+            scheduler.record(key, _dv(1), success=True)
+        next_due = scheduler.next_due()
+        assert next_due is not None
+        clock.advance(max(0.0, next_due - clock.monotonic()))
+    assert all(sorted(due) == sorted(keys) for due in reads)
