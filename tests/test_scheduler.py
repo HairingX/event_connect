@@ -856,3 +856,32 @@ def test_a_key_is_read_at_most_a_tenth_of_its_interval_ahead() -> None:
     scheduler.record("b", _dv(1), success=True)
     clock.advance(2.0 - 0.3)
     assert scheduler.due() == ["a"]
+
+
+def test_a_refresh_due_alone_brings_nothing_forward() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.0)
+    clock.advance(9.5)
+    scheduler.refresh(["a"])
+    assert scheduler.due() == ["a"]
+
+
+def test_a_refresh_just_before_its_rhythm_does_not_move_it() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.0)
+    clock.advance(9.5)
+    scheduler.refresh(["a"])
+    assert _tick(scheduler, clock, 0.0, {"a": (1, True)}) == ["a"]
+    clock.advance(0.5)
+    assert scheduler.due() == ["a", "b"]
+
+
+def test_a_retry_just_before_its_rhythm_does_not_move_it() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.0)
+    clock.advance(5.0)
+    scheduler.record("a", None, success=False, retry_after=4.5)
+    clock.advance(4.5)
+    assert _tick(scheduler, clock, 0.0, {"a": (1, True)}) == ["a"]
+    clock.advance(0.5)
+    assert scheduler.due() == ["a", "b"]
