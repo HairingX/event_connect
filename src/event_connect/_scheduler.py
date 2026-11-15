@@ -47,9 +47,8 @@ class Scheduler:
     """The schedule of one device: poll intervals, overrides, pending refreshes, following.
 
     Each key keeps its own rhythm: a read a refresh or a retry asked for does not move the next
-    regular one, unless it comes so close to it that it is read in its place. Whenever a key is
-    due, the keys due within a second, at most a tenth of their interval, are read with it, and
-    take its rhythm. Whether, and when, a failed read is tried again is the protocol's to say, as it
+    regular one. Whenever a key is due on its rhythm, the keys due within a second, at most a tenth
+    of their interval, are read with it, and take its rhythm. Whether, and when, a failed read is tried again is the protocol's to say, as it
     alone knows what a failure means: it says so when it records the read.
     """
 
@@ -224,7 +223,9 @@ class Scheduler:
         if retry_after is not None and not (math.isfinite(retry_after) and retry_after >= 0):
             raise ValueError(f"retry_after must be a finite number >= 0, got {retry_after}")
         now = self._clock.monotonic()
-        if self._regular_due(key) - self._gather(key) <= now:
+        refresh = self._pending.get(key)
+        asked = (refresh is not None and refresh.not_before <= now) or self._retry_at.get(key, math.inf) <= now
+        if self._regular_due(key) - (0.0 if asked else self._gather(key)) <= now:
             self._last_regular[key] = now
         self._record_outcome(key, success, now, retry_after)
 
@@ -286,8 +287,8 @@ class Scheduler:
         never = [key for key, due in regular.items() if key not in seen and due == -math.inf]
         overdue = sorted((key for key, due in regular.items() if key not in seen and -math.inf < due <= now),
                          key=lambda key: (regular[key], order[key]))
-        if not (ready or never or overdue):
-            return []
+        if not (never or overdue):
+            return ready
         taken = seen.union(never, overdue)
         soon = sorted((key for key, due in regular.items() if key not in taken and due - self._gather(key) <= now),
                       key=lambda key: (regular[key], order[key]))
