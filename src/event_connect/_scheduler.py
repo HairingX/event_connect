@@ -13,6 +13,13 @@ from ._value import DataValue, Quality, Value
 
 _LOGGER = logging.getLogger(__name__)
 
+GATHER_WITHIN = 1.0
+"""Seconds ahead of its rhythm a key is read with others that are due, so that keys read together
+stay together: their rhythms otherwise drift apart by the moments between their records, and each
+is read on its own."""
+GATHER_SHARE = 0.1
+"""The most of its interval a key is read ahead of its rhythm."""
+
 
 @dataclass(frozen=True, slots=True)
 class _Pending:
@@ -40,7 +47,8 @@ class Scheduler:
     """The schedule of one device: poll intervals, overrides, pending refreshes, following.
 
     Each key keeps its own rhythm: a read a refresh or a retry asked for does not move the next
-    regular one. Whether, and when, a failed read is tried again is the protocol's to say, as it
+    regular one. Whenever a key is due on its rhythm, the keys due within a second, at most a tenth
+    of their interval, are read with it, and take its rhythm. Whether, and when, a failed read is tried again is the protocol's to say, as it
     alone knows what a failure means: it says so when it records the read.
     """
 
@@ -215,7 +223,9 @@ class Scheduler:
         if retry_after is not None and not (math.isfinite(retry_after) and retry_after >= 0):
             raise ValueError(f"retry_after must be a finite number >= 0, got {retry_after}")
         now = self._clock.monotonic()
-        if self._regular_due(key) <= now:
+        refresh = self._pending.get(key)
+        asked = (refresh is not None and refresh.not_before <= now) or self._retry_at.get(key, math.inf) <= now
+        if self._regular_due(key) - (0.0 if asked else self._gather(key)) <= now:
             self._last_regular[key] = now
         self._record_outcome(key, success, now, retry_after)
 
@@ -277,7 +287,12 @@ class Scheduler:
         never = [key for key, due in regular.items() if key not in seen and due == -math.inf]
         overdue = sorted((key for key, due in regular.items() if key not in seen and -math.inf < due <= now),
                          key=lambda key: (regular[key], order[key]))
-        return ready + never + overdue
+        if not (never or overdue):
+            return ready
+        taken = seen.union(never, overdue)
+        soon = sorted((key for key, due in regular.items() if key not in taken and due - self._gather(key) <= now),
+                      key=lambda key: (regular[key], order[key]))
+        return ready + never + overdue + soon
 
     def next_due(self) -> float | None:
         """The monotonic time `due()` would next return something; `None` if nothing ever will."""
@@ -299,6 +314,11 @@ class Scheduler:
                 if due < math.inf:
                     times[key] = due
         return times
+
+    def _gather(self, key: str) -> float:
+        """Seconds ahead of its rhythm `key` may be read with others."""
+        interval = self.interval(key)
+        return 0.0 if interval is None else min(GATHER_WITHIN, GATHER_SHARE * interval)
 
     def _regular_due(self, key: str) -> float:
         last = self._last_regular.get(key)

@@ -799,3 +799,109 @@ def test_a_retry_is_read_even_for_a_key_nobody_polls() -> None:
     scheduler.record("a", None, success=False, retry_after=1.0)
     clock.advance(1.0)
     assert scheduler.due() == ["a"]
+
+
+# ================================================================================= gathering
+
+
+def _two_fast(clock: FakeClock, gap: float) -> Scheduler:
+    """`a` and `b` polled every 10 s, `b` first read `gap` seconds after `a`."""
+    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
+    _activate(scheduler, "a", "b")
+    scheduler.record("a", _dv(1), success=True)
+    clock.advance(gap)
+    scheduler.record("b", _dv(1), success=True)
+    return scheduler
+
+
+def test_keys_read_moments_apart_are_read_together_again() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.00002)
+    clock.advance(10.0 - 0.00002)
+    assert scheduler.due() == ["a", "b"]
+
+
+def test_a_key_read_with_others_takes_their_rhythm() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.5)
+    assert _tick(scheduler, clock, 9.5, {"a": (1, True), "b": (1, True)}) == ["a", "b"]
+    clock.advance(9.9)
+    assert scheduler.due() == []
+    clock.advance(0.1)
+    assert scheduler.due() == ["a", "b"]
+
+
+def test_a_key_due_more_than_a_second_later_waits_for_its_own_rhythm() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 1.5)
+    clock.advance(10.0 - 1.5)
+    assert scheduler.due() == ["a"]
+
+
+def test_nothing_is_read_ahead_of_its_rhythm_while_nothing_is_due() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.5)
+    clock.advance(9.0)
+    assert scheduler.due() == []
+
+
+def test_a_key_is_read_at_most_a_tenth_of_its_interval_ahead() -> None:
+    clock = FakeClock()
+    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 2.0})
+    scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
+    _activate(scheduler, "a", "b")
+    scheduler.record("a", _dv(1), success=True)
+    clock.advance(0.3)
+    scheduler.record("b", _dv(1), success=True)
+    clock.advance(2.0 - 0.3)
+    assert scheduler.due() == ["a"]
+
+
+def test_a_refresh_due_alone_brings_nothing_forward() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.0)
+    clock.advance(9.5)
+    scheduler.refresh(["a"])
+    assert scheduler.due() == ["a"]
+
+
+def test_a_refresh_just_before_its_rhythm_does_not_move_it() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.0)
+    clock.advance(9.5)
+    scheduler.refresh(["a"])
+    assert _tick(scheduler, clock, 0.0, {"a": (1, True)}) == ["a"]
+    clock.advance(0.5)
+    assert scheduler.due() == ["a", "b"]
+
+
+def test_a_retry_just_before_its_rhythm_does_not_move_it() -> None:
+    clock = FakeClock()
+    scheduler = _two_fast(clock, 0.0)
+    clock.advance(5.0)
+    scheduler.record("a", None, success=False, retry_after=4.5)
+    clock.advance(4.5)
+    assert _tick(scheduler, clock, 0.0, {"a": (1, True)}) == ["a"]
+    clock.advance(0.5)
+    assert scheduler.due() == ["a", "b"]
+
+
+def test_keys_read_together_stay_together_however_long_it_runs() -> None:
+    """Each record takes a moment, as it does outside a test."""
+    clock = FakeClock()
+    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    keys = [f"k{n}" for n in range(30)]
+    scheduler.set_points([_point(key, PollRate.FAST) for key in keys])
+    _activate(scheduler, *keys)
+    reads: list[list[str]] = []
+    for _ in range(100):
+        due = scheduler.due()
+        reads.append(due)
+        for key in due:
+            clock.advance(0.00001)
+            scheduler.record(key, _dv(1), success=True)
+        next_due = scheduler.next_due()
+        assert next_due is not None
+        clock.advance(max(0.0, next_due - clock.monotonic()))
+    assert all(sorted(due) == sorted(keys) for due in reads)

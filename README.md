@@ -89,6 +89,11 @@ scheduler.record(TEMPERATURE, value, success=True)
 assert scheduler.due() == []  # due again after its poll interval
 ```
 
+Each point keeps its own rhythm, counted from its last regular read. Whenever a point is due, the
+points due within the next second, and at most a tenth of their interval, are returned with it and
+take its rhythm. Points read together therefore stay together, and one request can carry them,
+where moments between their records would otherwise drift them apart until each is read alone.
+
 ## Example: a complete client
 
 The client below reads an imaginary device that answers a list of register numbers with their
