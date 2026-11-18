@@ -7,6 +7,7 @@ on these. Support for tests and for measuring a device's timing is in `event_con
 from importlib.metadata import version as _installed_version
 
 from ._certainty import Certainty
+from ._client import DeviceClient, ModelInfo, PointsCallback
 from ._clock import Clock, SystemClock
 from ._errors import (
     AuthenticationError,
@@ -19,6 +20,7 @@ from ._errors import (
     UnsupportedDeviceError,
 )
 from ._events import Subscriber, Subscriptions, ValueCallback, changed, should_poll, tell
+from ._identity import Identity
 from ._key import Key, is_key, is_state_type
 from ._point import (
     VALUE_TYPES,
@@ -79,17 +81,21 @@ __all__ = [
     "ClientError",
     "Clock",
     "DataValue",
+    "DeviceClient",
     "Exponential",
     "Fixed",
+    "Identity",
     "InvalidValueError",
     "Jitter",
     "Key",
     "Labels",
     "Limits",
     "ModelError",
+    "ModelInfo",
     "NotConnectedError",
     "Passes",
     "Point",
+    "PointsCallback",
     "PollRate",
     "Pulse",
     "Quality",

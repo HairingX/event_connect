@@ -226,6 +226,8 @@ asyncio.run(main())
 
 A real client also:
 - runs a loop that sleeps until the time `next_due()` returns;
+- offers the whole of `DeviceClient`, described below, so that it is used as every other client
+  is;
 - handles writes: it refuses a value that `point.limits.problem(value)` names a reason for,
   reads the written point back after `Timing.written_point_delay(point)`, and reads the points
   its `on_write` refresh selects with `select()` after `Timing.on_write_delay(point)`;
@@ -338,6 +340,29 @@ such point. A `Timing` holds the intervals, with how long a write takes to show;
   cancelled request does not block later ones. Once the retry gives up (`gave_up`), nothing goes
   through until `reset()`, as when the device is connected afresh. Before letting a probe go,
   ask `await retry.ready()`; if it says no, `postpone(now)` waits the same pause again.
+
+### The shared client
+
+`DeviceClient` is a `typing.Protocol` of what every client of a device offers, so that a consumer
+uses each the same way: `connect()`, `disconnect()`, `run()` and `poll()`; `refresh()`, `write()`
+and `write_sequence()`; `value()`, `values`, `status()`; the subscriptions to values, statuses
+and points; `set_polling()` and `set_scheduled_polling()`; `points`, `model`, `identity`, `has()`,
+`can_read()`, `can_write()`, `select()`, `instances()` and `unavailable_reasons`; `silent`,
+`silent_for`, `consecutive_failures()`, `seconds_until_next_poll()` and `diagnostics()`. Its
+`model` is a `ModelInfo`: a name and a manufacturer. A client is checked against it both by a type
+checker and at runtime:
+
+```python
+from event_connect import DeviceClient
+
+assert not isinstance(object(), DeviceClient)
+```
+
+Every client behaves alike where the protocol does not decide: `poll`, `refresh` and `write` raise
+`NotConnectedError` until `connect()`, and again from `disconnect()` until the next `connect()`,
+which also turns `Status.CONNECTED` False; `points`, `model` and `seconds_until_next_poll` raise it
+until the first `connect()`; `value(key)` is None for a key the device has no value for; and
+`subscribe(key)` raises `KeyError` for a key no model of the client has.
 
 ### Retry policies
 
@@ -455,6 +480,12 @@ Everything is imported from `event_connect`, and test support from `event_connec
 
 **Writes**
 - `Write[T]`: one write of a sequence.
+
+**Clients**
+- `DeviceClient`: what every client of a device offers, whatever its protocol.
+- `ModelInfo`: the name and manufacturer of a device's model.
+- `Identity`: what a device reports about itself.
+- `PointsCallback`: called with the keys a device has gained and lost.
 
 **Unresponsive devices and retries**
 - `Reachability`: whether the device is online.
