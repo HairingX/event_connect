@@ -1,6 +1,7 @@
 """The two clocks the library uses, behind one object that can be replaced."""
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
@@ -18,6 +19,10 @@ class Clock(Protocol):
         """The current time, timezone-aware UTC."""
         ...
 
+    async def sleep(self, seconds: float) -> None:
+        """Return once `seconds` have passed on the monotonic clock."""
+        ...
+
 
 class SystemClock:
     """The real clocks."""
@@ -29,3 +34,7 @@ class SystemClock:
     def now(self) -> datetime:
         """The system's time, timezone-aware UTC."""
         return datetime.now(timezone.utc)
+
+    async def sleep(self, seconds: float) -> None:
+        """Wait `seconds` of real time."""
+        await asyncio.sleep(seconds)

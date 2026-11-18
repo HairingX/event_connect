@@ -225,7 +225,7 @@ asyncio.run(main())
 ```
 
 A real client also:
-- runs a loop that sleeps until the time `next_due()` returns;
+- runs a loop that sleeps on its clock until the time `next_due()` returns;
 - offers the whole of `DeviceClient`, described below, so that it is used as every other client
   is;
 - handles writes: it refuses a value that `point.limits.problem(value)` names a reason for,
@@ -501,10 +501,13 @@ Everything is imported from `event_connect`, and test support from `event_connec
   `ClientError` ones.
 
 **Time**
-- `Clock`: the interface for a clock. `SystemClock` is the real one.
+- `Clock`: the interface for a clock: monotonic time to schedule by, wall time to stamp values
+  with, and `sleep()` on the monotonic one. `SystemClock` is the real one.
 
 **Testing** (`event_connect.testing`)
-- `FakeClock`: a clock that moves only when told.
+- `FakeClock`: a clock that moves only when told. Its `sleep()` ends once `advance()` reaches
+  its end; with `FakeClock(autojump=True)` it moves the clock itself and returns at once. `sleeps`
+  records what each sleep asked for.
 - `FakePoint`: a point without a protocol.
 - `Latency`, `Settling`, `recommended_refresh()`: turning measurements into waits.
 

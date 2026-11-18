@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ast
+import asyncio
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -122,6 +124,111 @@ def test_a_fake_clock_moves_both_clocks_only_when_told() -> None:
     start = (clock.monotonic(), clock.now())
     clock.advance(5)
     assert clock.monotonic() == start[0] + 5 and (clock.now() - start[1]).total_seconds() == 5
+
+
+def test_the_system_clock_sleeps_in_real_time() -> None:
+    started = time.monotonic()
+    asyncio.run(SystemClock().sleep(0.02))
+    assert time.monotonic() - started >= 0.02
+
+
+async def _turns(count: int = 5) -> None:
+    for _ in range(count):
+        await asyncio.sleep(0)
+
+
+def test_a_fake_sleep_ends_only_once_the_clock_is_moved_to_its_end() -> None:
+    clock = FakeClock()
+
+    async def scenario() -> list[str]:
+        ended: list[str] = []
+
+        async def sleep(name: str, seconds: float) -> None:
+            await clock.sleep(seconds)
+            ended.append(name)
+        tasks = [asyncio.create_task(sleep(name, seconds)) for name, seconds in (("b", 5), ("a", 3), ("c", 5))]
+        await _turns()
+        clock.advance(2.9)
+        await _turns()
+        assert ended == []
+        clock.advance(0.1)
+        await _turns()
+        assert ended == ["a"]
+        clock.advance(10)
+        await asyncio.gather(*tasks)
+        return ended
+    assert asyncio.run(scenario()) == ["a", "b", "c"]
+    assert clock.sleeps == [5, 3, 5]
+
+
+def test_a_fake_clock_satisfies_the_protocol() -> None:
+    clock: Clock = FakeClock()
+    assert isinstance(clock, Clock)
+
+
+def test_a_fake_sleep_of_no_time_ends_at_once() -> None:
+    clock = FakeClock()
+    asyncio.run(clock.sleep(0))
+    asyncio.run(clock.sleep(-1))
+    assert clock.monotonic() == 1000.0 and clock.sleeps == [0, -1]
+
+
+def test_moving_only_the_wall_clock_ends_no_sleep() -> None:
+    clock = FakeClock()
+
+    async def scenario() -> bool:
+        sleeping = asyncio.create_task(clock.sleep(1))
+        await _turns()
+        clock.jump_wall(3600)
+        await _turns()
+        done = sleeping.done()
+        clock.advance(1)
+        await sleeping
+        return done
+    assert asyncio.run(scenario()) is False
+
+
+def test_a_cancelled_fake_sleep_ends_cancelled_and_the_clock_still_moves() -> None:
+    clock = FakeClock()
+
+    async def scenario() -> bool:
+        sleeping = asyncio.create_task(clock.sleep(1))
+        await _turns()
+        sleeping.cancel()
+        await asyncio.gather(sleeping, return_exceptions=True)
+        clock.advance(1)
+        return sleeping.cancelled()
+    assert asyncio.run(scenario()) is True
+    assert clock.monotonic() == 1001.0
+
+
+def test_a_fake_sleep_left_behind_by_a_closed_event_loop_is_not_woken() -> None:
+    clock = FakeClock()
+    loop = asyncio.new_event_loop()
+    loop.create_task(clock.sleep(1))
+    loop.run_until_complete(asyncio.sleep(0))
+    loop.close()
+    clock.advance(1)
+    assert clock.monotonic() == 1001.0
+
+
+def test_an_autojumping_fake_sleep_moves_the_clock_by_itself() -> None:
+    clock = FakeClock(autojump=True)
+
+    async def scenario() -> list[str]:
+        order: list[str] = []
+
+        async def sleeper() -> None:
+            await clock.sleep(1.5)
+            order.append("slept")
+
+        async def other() -> None:
+            order.append("other ran")
+        await asyncio.gather(sleeper(), other())
+        await clock.sleep(0.5)
+        return order
+    assert asyncio.run(scenario()) == ["other ran", "slept"]
+    assert clock.monotonic() == 1002.0 and clock.sleeps == [1.5, 0.5]
 
 
 def test_the_package_imports_nothing_but_the_standard_library() -> None:

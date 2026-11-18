@@ -54,7 +54,13 @@ class DeviceClient(Protocol):
         ...
 
     async def run(self) -> None:
-        """Poll whenever something is due, until cancelled."""
+        """Poll whenever something is due, until cancelled; it never ends by itself.
+
+        While the client is not connected - before `connect()`, or after `disconnect()` - it
+        waits until it is. A poll that raises is logged, and polling goes on after a pause: the
+        first failure in a row at error level with its traceback, the ones after it at debug
+        level, and the first poll that succeeds after them at info level.
+        """
         ...
 
     async def poll(self) -> None:
