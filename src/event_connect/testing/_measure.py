@@ -70,17 +70,23 @@ class Settling:
         return f"{self.change}: {outcome} ({values})"
 
 
-def recommended_refresh(settlings: tuple[Settling, ...], every: float) -> tuple[float, float] | None:
+def recommended_refresh(settlings: tuple[Settling, ...], every: float, *,
+                        margin: float) -> tuple[float, float] | None:
     """An `after` and an `until_stable` that follow every measured change until it settles: the
-    first read when the slowest has settled, and room for one twice as slow; None when one did
-    not settle.
+    first read when the slowest has settled, and room for one `margin` times as slow; None when
+    one did not settle.
 
     Args:
         every: the seconds between the readings, which `after` is rounded up to.
+
+    Raises:
+        ValueError: `margin` is below 1.
     """
+    if not margin >= 1:
+        raise ValueError(f"margin must be at least 1, got {margin}")
     times = [settling.settled_after for settling in settlings]
     if not times or any(seconds is None for seconds in times):
         return None
     slowest = max(seconds for seconds in times if seconds is not None)
     after = max(every, math.ceil(slowest / every) * every)
-    return after, max(after * 2, math.ceil(slowest * 2))
+    return after, max(after * margin, math.ceil(slowest * margin))

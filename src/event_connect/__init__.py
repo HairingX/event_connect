@@ -7,6 +7,7 @@ on these. Support for tests and for measuring a device's timing is in `event_con
 from importlib.metadata import version as _installed_version
 
 from ._certainty import Certainty
+from ._client import DeviceClient, ModelInfo, PointsCallback
 from ._clock import Clock, SystemClock
 from ._errors import (
     AuthenticationError,
@@ -19,9 +20,9 @@ from ._errors import (
     UnsupportedDeviceError,
 )
 from ._events import Subscriber, Subscriptions, ValueCallback, changed, should_poll, tell
+from ._identity import Identity
 from ._key import Key, is_key, is_state_type
 from ._point import (
-    DEFAULT_INTERVALS,
     VALUE_TYPES,
     Change,
     Labels,
@@ -34,6 +35,7 @@ from ._point import (
     Transform,
     Transforms,
     WriteKind,
+    WriteRange,
     is_instance,
     select,
     selector,
@@ -58,15 +60,13 @@ from ._resilience import (
 )
 from ._scheduler import Scheduler
 from ._status import Status, StatusBoard, StatusCallback
-from ._timing import DEFAULT_TIMING, Timing
+from ._timing import Timing
 from ._unit import Unit
 from ._value import DataValue, Quality, Value, stale
 from ._writes import Write
 
 __version__ = _installed_version("event_connect")
 __all__ = [
-    "DEFAULT_INTERVALS",
-    "DEFAULT_TIMING",
     "NO_RETRY",
     "VALUE_TYPES",
     "AnyOf",
@@ -81,17 +81,21 @@ __all__ = [
     "ClientError",
     "Clock",
     "DataValue",
+    "DeviceClient",
     "Exponential",
     "Fixed",
+    "Identity",
     "InvalidValueError",
     "Jitter",
     "Key",
     "Labels",
     "Limits",
     "ModelError",
+    "ModelInfo",
     "NotConnectedError",
     "Passes",
     "Point",
+    "PointsCallback",
     "PollRate",
     "Pulse",
     "Quality",
@@ -120,6 +124,7 @@ __all__ = [
     "Within",
     "Write",
     "WriteKind",
+    "WriteRange",
     "changed",
     "is_instance",
     "is_key",

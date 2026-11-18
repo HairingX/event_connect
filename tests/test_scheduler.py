@@ -5,20 +5,21 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-import logging
-
 import pytest
 
-from event_connect import DEFAULT_INTERVALS, DataValue, Key, Point, PollRate, Quality, Scheduler
+from event_connect import DataValue, Key, Point, PollRate, Quality, Scheduler
 from event_connect.testing import FakeClock, FakePoint
 
 # ================================================================================== helpers
+
+INTERVALS = {PollRate.FAST: 10.0, PollRate.MEDIUM: 30.0, PollRate.SLOW: 60.0, PollRate.RARE: 900.0}
 
 
 def _point(key: str, poll_rate: PollRate = PollRate.SLOW, *, readable: bool = True,
            writable: bool = False) -> Point[Any]:
     """A minimal point - only what scheduling cares about: key, poll rate and which sides it has."""
-    return FakePoint(Key(key, int), can_read=readable, can_write=writable, poll_rate=poll_rate)
+    return FakePoint(Key(key, int), can_read=readable, can_write=writable,
+                     poll_rate=poll_rate if readable else None)
 
 
 def _dv(value: object, quality: Quality = Quality.GOOD,
@@ -43,42 +44,40 @@ def _tick(scheduler: Scheduler, clock: FakeClock, advance: float,
     return due
 
 
-class _Recorder(logging.Handler):
-    def __init__(self, records: list[logging.LogRecord]) -> None:
-        super().__init__()
-        self.records = records
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-
 # =============================================================================== construction
 
 
-def test_model_default_falls_back_to_DEFAULT_INTERVALS_per_group() -> None:
-    scheduler = Scheduler(FakeClock(), poll_intervals={PollRate.FAST: 5.0})
-    scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.SLOW),
-                        _point("c", PollRate.RARE), _point("d", PollRate.STATIC)])
+def test_a_point_is_read_at_its_poll_rate_s_interval_and_a_static_one_never_on_a_timer() -> None:
+    scheduler = Scheduler(FakeClock(), {PollRate.FAST: 5.0, PollRate.SLOW: 60.0})
+    scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.SLOW), _point("d", PollRate.STATIC)])
     assert scheduler.interval("a") == 5.0
-    assert scheduler.interval("b") == DEFAULT_INTERVALS[PollRate.SLOW]
-    assert scheduler.interval("c") == DEFAULT_INTERVALS[PollRate.RARE]
+    assert scheduler.interval("b") == 60.0
     assert scheduler.interval("d") is None
 
 
-def test_negative_min_interval_rejected() -> None:
+def test_a_point_whose_poll_rate_has_no_interval_is_refused() -> None:
+    scheduler = Scheduler(FakeClock(), {PollRate.FAST: 5.0})
+    with pytest.raises(ValueError, match="'b' \\(SLOW\\), 'c' \\(RARE\\)"):
+        scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.SLOW), _point("c", PollRate.RARE)])
+
+
+def test_a_rate_without_an_interval_has_none_to_give() -> None:
+    scheduler = Scheduler(FakeClock(), {PollRate.FAST: 5.0})
+    assert scheduler.rate_interval(PollRate.FAST) == 5.0
+    assert scheduler.rate_interval(PollRate.STATIC) is None
+    with pytest.raises(KeyError):
+        scheduler.rate_interval(PollRate.SLOW)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+def test_an_interval_must_be_a_finite_number_above_zero(bad: float) -> None:
     with pytest.raises(ValueError):
-        Scheduler(FakeClock(), min_poll_interval=-1.0)
+        Scheduler(FakeClock(), {PollRate.FAST: bad})
 
 
-def test_model_default_below_floor_is_a_construction_error() -> None:
-    with pytest.raises(ValueError):
-        Scheduler(FakeClock(), poll_intervals={PollRate.FAST: 3.0}, min_poll_interval=5.0)
-
-
-@pytest.mark.parametrize("bad", [0.0, -1.0])
-def test_model_default_must_be_positive_or_none(bad: float) -> None:
-    with pytest.raises(ValueError):
-        Scheduler(FakeClock(), poll_intervals={PollRate.FAST: bad})
+def test_a_static_point_takes_no_interval() -> None:
+    with pytest.raises(ValueError, match="STATIC is never read on a timer"):
+        Scheduler(FakeClock(), {PollRate.STATIC: 900.0})
 
 
 # =============================================================================== set_points
@@ -86,25 +85,22 @@ def test_model_default_must_be_positive_or_none(bad: float) -> None:
 
 def test_set_points_keeps_state_for_keys_that_remain() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     p = _point("a", PollRate.FAST)
     scheduler.set_points([p])
     scheduler.set_polled("a", True)
-    scheduler.set_poll_interval("a", 3.0)
     _tick(scheduler, clock, 0.0, {"a": (1, True)})
 
     scheduler.set_points([p])  # same model handed back, e.g. after a rescan
     assert scheduler.is_polled("a") is True
-    assert scheduler.interval("a") == 3.0
     assert scheduler.due() == []  # last_attempt survived, so it is not due yet
 
 
 def test_set_points_drops_state_for_keys_that_are_gone() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a", PollRate.FAST)])
     scheduler.set_polled("a", True)
-    scheduler.set_poll_interval("a", 3.0)
 
     scheduler.set_points([_point("b", PollRate.FAST)])
     with pytest.raises(KeyError):
@@ -112,39 +108,28 @@ def test_set_points_drops_state_for_keys_that_are_gone() -> None:
 
     scheduler.set_points([_point("a", PollRate.FAST)])  # re-added: a fresh key, not the old state
     assert scheduler.is_polled("a") is False
-    assert scheduler.interval("a") == DEFAULT_INTERVALS[PollRate.FAST]
 
 
 def test_set_points_new_keys_start_unpolled_and_unread() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     scheduler.set_points([_point("a", PollRate.FAST)])
     assert scheduler.is_polled("a") is False
     assert scheduler.due() == []
 
 
 def test_set_points_ignores_points_without_a_read_side() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     scheduler.set_points([_point("a", PollRate.FAST),
                         _point("w", readable=False, writable=True)])
     with pytest.raises(KeyError):
         scheduler.is_polled("w")
 
 
-def test_group_overrides_persist_across_set_points() -> None:
-    scheduler = Scheduler(FakeClock())
-    scheduler.set_points([_point("a", PollRate.FAST)])
-    scheduler.set_poll_interval(PollRate.FAST, 3.0)
-
-    scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
-    assert scheduler.interval("a") == 3.0
-    assert scheduler.interval("b") == 3.0
-
-
 # =================================================================================== polled
 
 
 def test_polled_round_trip() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     scheduler.set_points([_point("a")])
     assert scheduler.is_polled("a") is False
     scheduler.set_polled("a", True)
@@ -152,20 +137,20 @@ def test_polled_round_trip() -> None:
 
 
 def test_set_polled_unknown_key_raises() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     with pytest.raises(KeyError):
         scheduler.set_polled("nope", True)
 
 
 def test_is_polled_unknown_key_raises() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     with pytest.raises(KeyError):
         scheduler.is_polled("nope")
 
 
 def test_unpolled_key_is_never_due_on_a_timer() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 1.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 1.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     clock.advance(100)
     assert scheduler.due() == []
@@ -173,7 +158,7 @@ def test_unpolled_key_is_never_due_on_a_timer() -> None:
 
 def test_unpolled_key_ignored_by_unforced_refresh() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a")])
     scheduler.refresh(["a"])
     assert scheduler.due() == []
@@ -182,7 +167,7 @@ def test_unpolled_key_ignored_by_unforced_refresh() -> None:
 
 def test_unpolled_key_read_by_forced_refresh() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a")])
     scheduler.refresh(["a"], force=True)
     assert scheduler.due() == ["a"]
@@ -191,61 +176,10 @@ def test_unpolled_key_read_by_forced_refresh() -> None:
 # ================================================================================= intervals
 
 
-def test_effective_interval_precedence() -> None:
-    scheduler = Scheduler(FakeClock())
-    scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
-    assert scheduler.interval("a") == DEFAULT_INTERVALS[PollRate.FAST]
-
-    scheduler.set_poll_interval(PollRate.FAST, 5.0)
-    assert scheduler.interval("a") == 5.0 and scheduler.interval("b") == 5.0
-
-    scheduler.set_poll_interval("a", 1.0)
-    assert scheduler.interval("a") == 1.0 and scheduler.interval("b") == 5.0
-
-    scheduler.set_poll_interval("a", None)  # removes the key override, falls back to the poll rate's
-    assert scheduler.interval("a") == 5.0
-
-
-def test_set_interval_rejects_non_positive() -> None:
-    scheduler = Scheduler(FakeClock())
-    scheduler.set_points([_point("a")])
-    with pytest.raises(ValueError):
-        scheduler.set_poll_interval("a", 0.0)
-    with pytest.raises(ValueError):
-        scheduler.set_poll_interval(PollRate.FAST, -1.0)
-
-
-def test_set_interval_unknown_key_raises() -> None:
-    scheduler = Scheduler(FakeClock())
-    with pytest.raises(KeyError):
-        scheduler.set_poll_interval("nope", 1.0)
-
-
 def test_interval_unknown_key_raises() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     with pytest.raises(KeyError):
         scheduler.interval("nope")
-
-
-def test_set_interval_clamps_to_floor_and_warns_once() -> None:
-    records: list[logging.LogRecord] = []
-    handler = _Recorder(records)
-    logger = logging.getLogger("event_connect._scheduler")
-    logger.addHandler(handler)
-    logger.setLevel(logging.WARNING)
-    try:
-        scheduler = Scheduler(FakeClock(), min_poll_interval=5.0)
-        scheduler.set_points([_point("a", PollRate.FAST)])
-
-        assert scheduler.set_poll_interval("a", 1.0) == 5.0
-        assert scheduler.set_poll_interval("a", 1.0) == 5.0  # same target again: no new warning
-        assert scheduler.interval("a") == 5.0
-        assert len(records) == 1
-
-        assert scheduler.set_poll_interval(PollRate.RARE, 2.0) == 5.0  # a different target warns once too
-        assert len(records) == 2
-    finally:
-        logger.removeHandler(handler)
 
 
 # ==================================================================================== due
@@ -253,7 +187,7 @@ def test_set_interval_clamps_to_floor_and_warns_once() -> None:
 
 def test_group_defaults_drive_due_times() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0, PollRate.RARE: 100.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0, PollRate.RARE: 100.0})
     scheduler.set_points([_point("fast", PollRate.FAST), _point("slow", PollRate.RARE)])
     _activate(scheduler, "fast", "slow")
 
@@ -270,7 +204,7 @@ def test_group_defaults_drive_due_times() -> None:
 
 def test_static_point_is_read_once_then_only_by_refresh() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a", PollRate.STATIC)])
     _activate(scheduler, "a")
 
@@ -286,7 +220,7 @@ def test_static_point_is_read_once_then_only_by_refresh() -> None:
 
 def test_failure_uses_attempt_time_not_a_retry_every_tick() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
 
@@ -305,7 +239,7 @@ def test_failure_uses_attempt_time_not_a_retry_every_tick() -> None:
 
 def test_refresh_schedules_after_a_delay() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a")])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(1), success=True)  # so it is not due for an unrelated reason
@@ -319,7 +253,7 @@ def test_refresh_schedules_after_a_delay() -> None:
 
 def test_refresh_merges_keeping_earliest_not_before_and_latest_deadline() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a")])
     _activate(scheduler, "a")
 
@@ -338,21 +272,21 @@ def test_refresh_merges_keeping_earliest_not_before_and_latest_deadline() -> Non
 
 
 def test_refresh_after_must_not_be_negative() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     scheduler.set_points([_point("a")])
     with pytest.raises(ValueError):
         scheduler.refresh(["a"], after=-1.0)
 
 
 def test_refresh_until_stable_must_be_positive() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     scheduler.set_points([_point("a")])
     with pytest.raises(ValueError):
         scheduler.refresh(["a"], after=1.0, until_stable=0.0)
 
 
 def test_refresh_until_stable_requires_a_positive_after() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     scheduler.set_points([_point("a")])
     with pytest.raises(ValueError):
         scheduler.refresh(["a"], after=0.0, until_stable=5.0)
@@ -360,7 +294,7 @@ def test_refresh_until_stable_requires_a_positive_after() -> None:
 
 def test_refresh_unknown_key_raises_and_schedules_nothing() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.SLOW: 60.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.SLOW: 60.0})
     scheduler.set_points([_point("a")])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(1), success=True)  # not due on its own, so a stray schedule would show
@@ -376,7 +310,7 @@ def test_refresh_unknown_key_raises_and_schedules_nothing() -> None:
 
 def test_following_keeps_going_while_ramping_then_two_equal_reads_stop_it() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a")])
     _activate(scheduler, "a")
 
@@ -399,7 +333,7 @@ def test_following_keeps_going_while_ramping_then_two_equal_reads_stop_it() -> N
 
 def test_following_window_expiring_stops_it() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 1_000.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 1_000.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
 
@@ -423,7 +357,7 @@ def test_following_window_expiring_stops_it() -> None:
 
 def test_following_failed_read_reschedules_and_keeps_baseline() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a")])
     _activate(scheduler, "a")
 
@@ -447,7 +381,7 @@ def test_following_failed_read_reschedules_and_keeps_baseline() -> None:
 
 def test_following_leaves_the_regular_rhythm_where_it_was() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(0), success=True)  # not due on the regular schedule yet
@@ -468,7 +402,7 @@ def test_following_leaves_the_regular_rhythm_where_it_was() -> None:
 
 def test_a_write_effect_is_followed_while_it_ramps_and_stops_when_two_reads_agree() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0})
     affected = ["fan_inlet_pct", "fan_outlet_pct"]
     scheduler.set_points([_point(key, PollRate.FAST) for key in affected])
     _activate(scheduler, *affected)
@@ -495,7 +429,7 @@ def test_a_write_effect_is_followed_while_it_ramps_and_stops_when_two_reads_agre
 
 def test_reset_makes_keys_due_now() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 1_000.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 1_000.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(1), success=True)
@@ -507,7 +441,7 @@ def test_reset_makes_keys_due_now() -> None:
 
 def test_reset_all_keys_when_none_given() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 1_000.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 1_000.0})
     scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
     _activate(scheduler, "a", "b")
     scheduler.record("a", _dv(1), success=True)
@@ -519,7 +453,7 @@ def test_reset_all_keys_when_none_given() -> None:
 
 def test_reset_clears_pending_and_following() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a")])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(1), success=True)
@@ -534,7 +468,7 @@ def test_reset_clears_pending_and_following() -> None:
 
 def test_reset_unknown_key_raises_without_partial_effect() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 1_000.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 1_000.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(1), success=True)
@@ -549,7 +483,7 @@ def test_reset_unknown_key_raises_without_partial_effect() -> None:
 
 def test_pending_and_regular_due_collapse_to_one_entry() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 5.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 5.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(1), success=True)
@@ -561,7 +495,7 @@ def test_pending_and_regular_due_collapse_to_one_entry() -> None:
 
 def test_never_attempted_sorts_before_overdue() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 5.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 5.0})
     scheduler.set_points([_point("overdue", PollRate.FAST), _point("fresh", PollRate.FAST)])
     _activate(scheduler, "overdue", "fresh")
     scheduler.record("overdue", _dv(1), success=True)
@@ -572,7 +506,7 @@ def test_never_attempted_sorts_before_overdue() -> None:
 
 def test_most_overdue_first() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 5.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 5.0})
     scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
     _activate(scheduler, "a", "b")
     scheduler.record("a", _dv(1), success=True)
@@ -585,7 +519,7 @@ def test_most_overdue_first() -> None:
 
 def test_ties_broken_by_point_order() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 5.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 5.0})
     scheduler.set_points([_point("first", PollRate.FAST), _point("second", PollRate.FAST)])
     _activate(scheduler, "second", "first")  # activation order must not matter
     assert scheduler.due() == ["first", "second"]  # never-attempted, tied: point order
@@ -604,14 +538,14 @@ def test_ties_broken_by_point_order() -> None:
 
 
 def test_next_due_none_with_no_polled_or_pending_keys() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     scheduler.set_points([_point("a")])
     assert scheduler.next_due() is None
 
 
 def test_next_due_now_for_never_attempted_polled_key() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a")])
     _activate(scheduler, "a")
     assert scheduler.next_due() == clock.monotonic()
@@ -619,7 +553,7 @@ def test_next_due_now_for_never_attempted_polled_key() -> None:
 
 def test_next_due_none_once_a_static_point_has_been_read() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a", PollRate.STATIC)])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(1), success=True)
@@ -628,7 +562,7 @@ def test_next_due_none_once_a_static_point_has_been_read() -> None:
 
 def test_next_due_is_the_earliest_of_regular_and_pending() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 100.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 100.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(1), success=True)
@@ -645,7 +579,7 @@ def test_next_due_is_the_earliest_of_regular_and_pending() -> None:
 
 def test_next_due_unaffected_by_a_wall_clock_jump() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 50.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 50.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
     scheduler.record("a", _dv(1), success=True)
@@ -663,7 +597,7 @@ def test_next_due_unaffected_by_a_wall_clock_jump() -> None:
 
 def test_a_refresh_read_does_not_move_the_regular_rhythm() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0})
     scheduler.set_points([_point("rpm", PollRate.FAST), _point("power", PollRate.FAST)])
     _activate(scheduler, "rpm", "power")
     for key in ("rpm", "power"):
@@ -676,7 +610,7 @@ def test_a_refresh_read_does_not_move_the_regular_rhythm() -> None:
 
 def test_keys_read_together_stay_together_after_a_refresh_of_one() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0})
     keys = ("rpm", "power", "speed")
     scheduler.set_points([_point(key, PollRate.FAST) for key in keys])
     _activate(scheduler, *keys)
@@ -698,7 +632,7 @@ def test_keys_read_together_stay_together_after_a_refresh_of_one() -> None:
 
 def test_reads_within_the_deadband_agree_and_end_the_following() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([FakePoint(Key("rpm", int), poll_rate=PollRate.FAST, deadband=20)])
     _activate(scheduler, "rpm")
     scheduler.record("rpm", _dv(1250), success=True)
@@ -710,7 +644,7 @@ def test_reads_within_the_deadband_agree_and_end_the_following() -> None:
 
 def test_reads_outside_the_deadband_go_on_being_followed() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([FakePoint(Key("rpm", int), poll_rate=PollRate.FAST, deadband=20)])
     _activate(scheduler, "rpm")
     scheduler.record("rpm", _dv(1250), success=True)
@@ -723,7 +657,7 @@ def test_reads_outside_the_deadband_go_on_being_followed() -> None:
 
 
 def test_a_retry_the_protocol_asks_for_must_be_a_finite_number_of_seconds() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     scheduler.set_points([_point("a")])
     for seconds in (-1.0, float("inf"), float("nan")):
         with pytest.raises(ValueError):
@@ -732,7 +666,7 @@ def test_a_retry_the_protocol_asks_for_must_be_a_finite_number_of_seconds() -> N
 
 def test_a_failed_read_waits_for_its_rhythm_unless_the_protocol_asks_for_a_retry() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
     scheduler.record("a", None, success=False)
@@ -742,7 +676,7 @@ def test_a_failed_read_waits_for_its_rhythm_unless_the_protocol_asks_for_a_retry
 
 def test_a_read_is_tried_again_when_the_protocol_asks() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.RARE: 900.0})
     scheduler.set_points([_point("battery", PollRate.RARE)])
     _activate(scheduler, "battery")
     scheduler.record("battery", None, success=False, retry_after=0.5)
@@ -751,18 +685,18 @@ def test_a_read_is_tried_again_when_the_protocol_asks() -> None:
     assert scheduler.due() == ["battery"]
 
 
-def test_a_read_the_protocol_asks_for_at_once_waits_for_the_shortest_interval_the_device_copes_with() -> None:
+def test_a_read_the_protocol_asks_for_at_once_is_due_at_once() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0}, min_poll_interval=5.0)
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.RARE: 900.0})
     scheduler.set_points([_point("battery", PollRate.RARE)])
     _activate(scheduler, "battery")
     scheduler.record("battery", None, success=False, retry_after=0.0)
-    assert scheduler.next_due() == clock.monotonic() + 5.0
+    assert scheduler.due() == ["battery"]
 
 
 def test_a_read_recorded_without_a_retry_ends_the_one_asked_for() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.RARE: 900.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.RARE: 900.0})
     scheduler.set_points([_point("a", PollRate.RARE)])
     _activate(scheduler, "a")
     scheduler.record("a", None, success=False, retry_after=1.0)
@@ -772,7 +706,7 @@ def test_a_read_recorded_without_a_retry_ends_the_one_asked_for() -> None:
 
 
 def test_failures_are_counted_until_a_read_succeeds() -> None:
-    scheduler = Scheduler(FakeClock())
+    scheduler = Scheduler(FakeClock(), INTERVALS)
     scheduler.set_points([_point("a")])
     scheduler.record("a", None, success=False)
     scheduler.record("a", None, success=False)
@@ -783,7 +717,7 @@ def test_failures_are_counted_until_a_read_succeeds() -> None:
 
 def test_a_retry_does_not_move_the_regular_rhythm() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0})
     scheduler.set_points([_point("a", PollRate.FAST)])
     _activate(scheduler, "a")
     scheduler.record("a", None, success=False, retry_after=1.0)
@@ -794,7 +728,7 @@ def test_a_retry_does_not_move_the_regular_rhythm() -> None:
 
 def test_a_retry_is_read_even_for_a_key_nobody_polls() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock)
+    scheduler = Scheduler(clock, INTERVALS)
     scheduler.set_points([_point("a")])
     scheduler.record("a", None, success=False, retry_after=1.0)
     clock.advance(1.0)
@@ -806,7 +740,7 @@ def test_a_retry_is_read_even_for_a_key_nobody_polls() -> None:
 
 def _two_fast(clock: FakeClock, gap: float) -> Scheduler:
     """`a` and `b` polled every 10 s, `b` first read `gap` seconds after `a`."""
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0})
     scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
     _activate(scheduler, "a", "b")
     scheduler.record("a", _dv(1), success=True)
@@ -848,7 +782,7 @@ def test_nothing_is_read_ahead_of_its_rhythm_while_nothing_is_due() -> None:
 
 def test_a_key_is_read_at_most_a_tenth_of_its_interval_ahead() -> None:
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 2.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 2.0})
     scheduler.set_points([_point("a", PollRate.FAST), _point("b", PollRate.FAST)])
     _activate(scheduler, "a", "b")
     scheduler.record("a", _dv(1), success=True)
@@ -890,7 +824,7 @@ def test_a_retry_just_before_its_rhythm_does_not_move_it() -> None:
 def test_keys_read_together_stay_together_however_long_it_runs() -> None:
     """Each record takes a moment, as it does outside a test."""
     clock = FakeClock()
-    scheduler = Scheduler(clock, poll_intervals={PollRate.FAST: 10.0})
+    scheduler = Scheduler(clock, poll_intervals={**INTERVALS, PollRate.FAST: 10.0})
     keys = [f"k{n}" for n in range(30)]
     scheduler.set_points([_point(key, PollRate.FAST) for key in keys])
     _activate(scheduler, *keys)

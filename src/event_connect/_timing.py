@@ -1,52 +1,48 @@
-"""How a library plans the reads of its devices: one profile, set by the library, that a client
-can be given another of."""
+"""How a device's points are read: the seconds between reads per poll rate, and how long a write
+takes to show."""
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from types import MappingProxyType
+from dataclasses import dataclass
 from typing import Any
 
 from ._clock import Clock
-from ._point import DEFAULT_INTERVALS, Point, PollRate
-from ._scheduler import Scheduler
+from ._point import Point, PollRate
+from ._scheduler import Scheduler, checked_intervals
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Timing:
-    """When a device's points are read, and how long its writes take to show.
-
-    A library sets one for its devices, as measured on them; a client may be given another.
-    """
-    poll_intervals: Mapping[PollRate, float | None] = field(default_factory=lambda: DEFAULT_INTERVALS)
-    """Seconds between reads per poll rate; a rate left out keeps its default."""
-    min_poll_interval: float = 0.0
-    """The shortest interval any point may be read at, however it is overridden."""
-    read_back_after: float = 1.0
-    """Seconds from a write until a read shows it, unless a point says otherwise."""
-    offline_after: float = 30.0
-    """Seconds a device may go without answering before it counts as not answering; a single
-    lost answer then does not make it unavailable."""
+    """When a device's points are read, and how long its writes take to show."""
+    poll_intervals: Mapping[PollRate, float]
+    """Seconds between reads per poll rate a point is read at on a timer; `PollRate.STATIC` has
+    none."""
+    read_back_after: float
+    """Seconds from a write until a read shows it."""
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "poll_intervals", MappingProxyType(dict(self.poll_intervals)))
-        for name in ("min_poll_interval", "read_back_after", "offline_after"):
-            seconds: float = getattr(self, name)
-            if not (math.isfinite(seconds) and seconds >= 0):
-                raise ValueError(f"{name} must be a finite number >= 0, got {seconds}")
+        object.__setattr__(self, "poll_intervals", checked_intervals(self.poll_intervals))
+        if not (math.isfinite(self.read_back_after) and self.read_back_after >= 0):
+            raise ValueError(f"read_back_after must be a finite number >= 0, got {self.read_back_after}")
+
+    @property
+    def fastest_interval(self) -> float | None:
+        """The shortest of its intervals; None when no poll rate is read on a timer."""
+        return min(self.poll_intervals.values(), default=None)
 
     def scheduler(self, clock: Clock) -> Scheduler:
         """A scheduler that plans by this timing."""
-        return Scheduler(clock, self.poll_intervals, min_poll_interval=self.min_poll_interval)
+        return Scheduler(clock, self.poll_intervals)
 
-    def read_back_delay(self, point: Point[Any]) -> float:
-        """Seconds after writing `point` before what its write disturbs is read."""
+    def written_point_delay(self, point: Point[Any]) -> float:
+        """Seconds after writing `point` before it is read back: `read_back_after`, whatever its
+        `on_write` says."""
+        return self.read_back_after
+
+    def on_write_delay(self, point: Point[Any]) -> float:
+        """Seconds after writing `point` before the points its `on_write` names are read: the
+        refresh's `after`, or `read_back_after` where it has none."""
         if point.on_write is not None and point.on_write.after is not None:
             return point.on_write.after
-        return point.read_back_after if point.read_back_after is not None else self.read_back_after
-
-
-DEFAULT_TIMING = Timing()
-"""A timing for a device nothing has been measured on: the default poll intervals, a second for a
-write to show, and half a minute of silence before the device counts as not answering."""
+        return self.read_back_after

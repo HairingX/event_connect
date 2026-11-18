@@ -27,6 +27,12 @@ class Quality(Enum):
     MISSING = auto()
     """This unit does not have the register (0x02). Permanent until a rescan."""
 
+    @property
+    def shows_a_value(self) -> bool:
+        """Whether a value of this quality has something to show: the value (GOOD, STALE), or
+        that the device has no reading (NO_DATA). OFFLINE and MISSING show nothing."""
+        return self in (Quality.GOOD, Quality.NO_DATA, Quality.STALE)
+
 
 @dataclass(frozen=True)
 class DataValue[T]:
