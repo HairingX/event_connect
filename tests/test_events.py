@@ -14,6 +14,7 @@ from event_connect import (
     Clock,
     DataValue,
     Key,
+    PollRate,
     Quality,
     Subscriptions,
     SystemClock,
@@ -36,7 +37,7 @@ def _told(subscriptions: Subscriptions, key: Key[Any]) -> list[Any]:
 
 
 def test_a_subscriber_is_told_a_change_and_not_the_same_value_again() -> None:
-    point = FakePoint(Key("p", int))
+    point = FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM)
     subscriptions = Subscriptions()
     seen = _told(subscriptions, point.key)
     for value in (1, 1, 2):
@@ -45,7 +46,7 @@ def test_a_subscriber_is_told_a_change_and_not_the_same_value_again() -> None:
 
 
 def test_a_change_of_quality_is_always_told() -> None:
-    point = FakePoint(Key("p", int))
+    point = FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM)
     subscriptions = Subscriptions()
     seen: list[Quality] = []
     subscriptions.add(point.key, lambda _key, _old, new: seen.append(new.quality), polls=True)
@@ -55,7 +56,7 @@ def test_a_change_of_quality_is_always_told() -> None:
 
 
 def test_a_change_inside_the_deadband_is_not_told() -> None:
-    point = FakePoint(Key("p", float), deadband=0.5)
+    point = FakePoint(Key("p", float), poll_rate=PollRate.MEDIUM, deadband=0.5)
     subscriptions = Subscriptions()
     seen = _told(subscriptions, point.key)
     for value in (20.0, 20.3, 20.6):
@@ -64,7 +65,7 @@ def test_a_change_inside_the_deadband_is_not_told() -> None:
 
 
 def test_a_raising_subscriber_does_not_keep_the_others_from_being_told() -> None:
-    point = FakePoint(Key("p", int))
+    point = FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM)
     subscriptions = Subscriptions()
 
     def raising(_key: Key[Any], _old: DataValue[Any] | None, _new: DataValue[Any]) -> None:
@@ -156,11 +157,11 @@ def test_a_status_board_tells_its_subscribers_every_change_and_keeps_a_raising_o
 
 
 @pytest.mark.parametrize(("point", "polled", "subscribed", "expected"), [
-    (FakePoint(Key("p", int)), set[str](), False, False),
-    (FakePoint(Key("p", int), poll_always=True), set[str](), False, True),
-    (FakePoint(Key("p", int), on_change=core.Refresh(["q"])), set[str](), False, True),
-    (FakePoint(Key("p", int)), {"p"}, False, True),
-    (FakePoint(Key("p", int)), set[str](), True, True),
+    (FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM), set[str](), False, False),
+    (FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM, poll_always=True), set[str](), False, True),
+    (FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM, on_change=core.Refresh(["q"])), set[str](), False, True),
+    (FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM), {"p"}, False, True),
+    (FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM), set[str](), True, True),
     (FakePoint(Key("p", int), can_read=False, can_write=True), {"p"}, True, False),
 ])
 def test_a_point_is_polled_when_it_says_so_triggers_a_refresh_or_a_consumer_asks_for_it(
@@ -172,7 +173,7 @@ def test_a_point_is_polled_when_it_says_so_triggers_a_refresh_or_a_consumer_asks
 
 
 def test_a_subscriber_that_does_not_poll_does_not_make_a_point_polled() -> None:
-    point = FakePoint(Key("p", int))
+    point = FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM)
     subscriptions = Subscriptions()
     subscriptions.add(point.key, lambda _key, _old, _new: None, polls=False)
     assert not core.should_poll(point, subscriptions, ())

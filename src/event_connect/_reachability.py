@@ -12,17 +12,29 @@ _LOGGER = logging.getLogger(__name__)
 
 class Reachability:
     """Whether a device answers: at once when it does, and only once it has stayed silent for
-    `offline_after` seconds when it does not.
+    `offline_after_intervals` of its `fastest_interval` when it does not, so that it misses that
+    many reads of its fastest poll rate before it no longer counts as answering.
 
-    It counts as not answering until it first answers. Once it has answered, its stopping and
-    its answering again are each logged once, at INFO, under `name`.
+    With no `fastest_interval`, as when nothing is read on a timer, the first request it leaves
+    unanswered ends its counting as answering. It counts as not answering until it first answers.
+    Once it has answered, its stopping and its answering again are each logged once, at INFO,
+    under `name`.
     """
 
-    def __init__(self, clock: Clock, offline_after: float, *, name: str = "The device") -> None:
-        if not (math.isfinite(offline_after) and offline_after >= 0):
-            raise ValueError(f"offline_after must be a finite number >= 0, got {offline_after}")
+    def __init__(self, clock: Clock, *, offline_after_intervals: int, fastest_interval: float | None,
+                 name: str = "The device") -> None:
+        """Watch a device by `clock`.
+
+        Raises:
+            ValueError: `offline_after_intervals` is below 1, or `fastest_interval` is not a finite
+                number above 0.
+        """
+        if offline_after_intervals < 1:
+            raise ValueError(f"offline_after_intervals must be at least 1, got {offline_after_intervals}")
+        if fastest_interval is not None and not (math.isfinite(fastest_interval) and fastest_interval > 0):
+            raise ValueError(f"fastest_interval must be a finite number above 0, got {fastest_interval}")
         self._clock = clock
-        self._offline_after = offline_after
+        self._silence_allowed = 0.0 if fastest_interval is None else offline_after_intervals * fastest_interval
         self._reachable = False
         self._lost = False
         self._silent_since: float | None = None
@@ -68,11 +80,11 @@ class Reachability:
         self._lost = False
 
     def unanswered(self) -> None:
-        """Note a request the device did not answer; once it has been silent for `offline_after`
-        seconds, it no longer counts as answering."""
+        """Note a request the device did not answer; once it has been silent long enough, it no
+        longer counts as answering."""
         if self._silent_since is None:
             self._silent_since = self._clock.monotonic()
-        if self._reachable and self.silent_for >= self._offline_after:
+        if self._reachable and self.silent_for >= self._silence_allowed:
             self._reachable = False
             self._lost = True
             _LOGGER.info("%s stopped answering %.0f s ago", self.name, self.silent_for)

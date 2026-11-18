@@ -23,23 +23,8 @@ class PollRate(Enum):
     SLOW = auto()
     RARE = auto()
     STATIC = auto()
-    """Read when connecting, when triggered or on request - never on a timer."""
-    SCAN = auto()
-    """How often what identifies the unit is read again, to find out whether it has changed.
-
-    No point is polled at it.
-    """
-
-
-DEFAULT_INTERVALS: Mapping[PollRate, float | None] = MappingProxyType({
-    PollRate.FAST: 10.0,
-    PollRate.MEDIUM: 30.0,
-    PollRate.SLOW: 60.0,
-    PollRate.RARE: 900.0,
-    PollRate.STATIC: None,
-    PollRate.SCAN: 900.0,
-})
-"""Seconds between reads per poll rate, used when a model does not set its own."""
+    """Read when connecting, when triggered or on request - never on a timer, so it has no
+    interval."""
 
 
 class WriteKind(Enum):
@@ -253,7 +238,8 @@ class Point[T]:
     _: KW_ONLY
     limits: Limits | None = None
     unit: Unit | None = None
-    poll_rate: PollRate = PollRate.MEDIUM
+    poll_rate: PollRate | None = None
+    """How fresh the point must be kept; every point that can be read has one, and no other."""
     poll_always: bool = False
     """Read even when no consumer asked for it - a value the device model itself depends on."""
     deadband: float | None = None
@@ -351,8 +337,10 @@ def _type_problems(point: Point[Any]) -> list[str]:
 
 def _read_problems(point: Point[Any]) -> list[str]:
     found: list[str] = []
-    if point.poll_rate is PollRate.SCAN:
-        found.append("PollRate.SCAN is how often a scan is checked, not a poll rate a point can have")
+    if point.readable and point.poll_rate is None:
+        found.append("it can be read, so it needs a poll_rate")
+    if not point.readable and point.poll_rate is not None:
+        found.append("a poll_rate says how often it is read, but it has no read side")
     if point.deadband is not None:
         if point.deadband < 0:
             found.append(f"deadband cannot be negative, got {point.deadband}")

@@ -10,7 +10,7 @@ import math
 import random
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from typing import Protocol, cast, runtime_checkable
 
 # =================================================================================== waits
@@ -50,8 +50,10 @@ class Fixed:
 class Exponential:
     """A wait that grows by `factor` at each try, from `start`, to at most `max`."""
     start: float
-    factor: float = 2.0
-    max: float | None = None
+    _: KW_ONLY
+    factor: float
+    max: float | None
+    """None: no cap but the largest float."""
 
     def __post_init__(self) -> None:
         _seconds("start", self.start)
@@ -107,7 +109,7 @@ class Jitter:
     """Another wait, spread at random by up to `spread` of it either way, so that devices that
     failed together do not try again together."""
     wait: Wait
-    spread: float = 0.1
+    spread: float
     rand: Callable[[], float] = field(default=random.random, compare=False)
     """A number from 0 to 1; replaceable, so that a test can fix it."""
 
@@ -180,13 +182,13 @@ class AnyOf(_Combinable):
 
 @dataclass(frozen=True)
 class Retry:
-    """Try again after `wait`, until `stop` gives up; without a `stop`, never give up.
+    """Try again after `wait`, until `stop` gives up; with a `stop` of None, never give up.
 
     A subclass may decide differently, in `next_delay`, or check something before each try, in
     `ready`.
     """
     wait: Wait
-    stop: Stop | None = None
+    stop: Stop | None
 
     def next_delay(self, attempts: int, elapsed: float) -> float | None:
         """Seconds until the next try after `attempts` tries, `elapsed` seconds after the first;

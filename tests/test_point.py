@@ -35,6 +35,8 @@ class Mode(IntEnum):
 
 
 def _refused(match: str, key: Key[Any] | str = Key("p", int), **fields: Any) -> None:
+    if fields.get("can_read", True):
+        fields.setdefault("poll_rate", PollRate.MEDIUM)
     with pytest.raises(ValueError, match=match):
         FakePoint(key, **fields)  # pyright: ignore[reportArgumentType]
 
@@ -43,19 +45,20 @@ def _refused(match: str, key: Key[Any] | str = Key("p", int), **fields: Any) -> 
 
 
 @pytest.mark.parametrize("fields", [
-    {},
-    {"can_write": True, "limits": Limits(5, 35, 0.5), "on_write": Refresh(["a", "b"], after=2, until_stable=30)},
-    {"on_change": Refresh(Labels(kind="alarm"))},
+    {"poll_rate": PollRate.MEDIUM},
+    {"poll_rate": PollRate.MEDIUM, "can_write": True, "limits": Limits(5, 35, 0.5),
+     "on_write": Refresh(["a", "b"], after=2, until_stable=30)},
+    {"poll_rate": PollRate.MEDIUM, "on_change": Refresh(Labels(kind="alarm"))},
     {"poll_always": True, "poll_rate": PollRate.STATIC, "unit": Unit.CELSIUS},
     {"can_read": False, "can_write": True, "write_kind": WriteKind.COMMAND},
-], ids=lambda f: "-".join(sorted(f)) or "plain")
+], ids=lambda f: "-".join(sorted(f)))
 def test_a_valid_point_is_accepted(fields: dict[str, Any]) -> None:
     FakePoint(Key("p", float), **fields)
 
 
 @pytest.mark.parametrize("value_type", [bool, int, float, str, date, datetime, time, Mode])
 def test_every_value_type_is_accepted(value_type: type[Any]) -> None:
-    FakePoint(Key("p", value_type))
+    FakePoint(Key("p", value_type), poll_rate=PollRate.MEDIUM)
 
 
 # =========================================================================== refused points
@@ -100,8 +103,16 @@ def test_poll_always_needs_a_read_side() -> None:
     _refused("poll_always", can_read=False, can_write=True, poll_always=True)
 
 
-def test_no_point_is_polled_at_the_scan_rate() -> None:
-    _refused("PollRate.SCAN", poll_rate=PollRate.SCAN)
+def test_a_point_that_can_be_read_says_how_often() -> None:
+    _refused("it can be read, so it needs a poll_rate", poll_rate=None)
+
+
+def test_a_point_that_cannot_be_read_has_no_poll_rate() -> None:
+    _refused("a poll_rate says how often it is read", can_read=False, can_write=True, poll_rate=PollRate.FAST)
+
+
+def test_there_is_no_poll_rate_for_checking_a_scan() -> None:
+    assert [rate.name for rate in PollRate] == ["FAST", "MEDIUM", "SLOW", "RARE", "STATIC"]
 
 
 def test_a_command_needs_a_write_side() -> None:
@@ -131,7 +142,7 @@ def test_on_write_has_no_change_to_wait_for() -> None:
 def test_a_point_has_no_read_back_time_of_its_own() -> None:
     fields: dict[str, Any] = {"read_back_after": 1.0}
     with pytest.raises(TypeError):
-        FakePoint(Key("p", int), can_write=True, **fields)
+        FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM, can_write=True, **fields)
 
 
 def test_a_label_needs_a_name() -> None:
@@ -140,7 +151,7 @@ def test_a_label_needs_a_name() -> None:
 
 def test_every_problem_is_named_in_one_error() -> None:
     with pytest.raises(ValueError) as caught:
-        FakePoint(Key("p", bool), deadband=-1, limits=Limits(0, 1))
+        FakePoint(Key("p", bool), poll_rate=PollRate.MEDIUM, deadband=-1, limits=Limits(0, 1))
     message = str(caught.value)
     assert "deadband applies to numbers" in message and "limits describe writes" in message
 
@@ -158,7 +169,7 @@ def test_a_key_is_its_text_wherever_it_goes() -> None:
 
 def test_labels_are_a_frozen_copy() -> None:
     labels = {"room": 1}
-    point = FakePoint(Key("p", int), labels=labels)
+    point = FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM, labels=labels)
     labels["room"] = 2
     assert point.labels == {"room": 1}
     with pytest.raises(TypeError):
@@ -166,8 +177,8 @@ def test_labels_are_a_frozen_copy() -> None:
 
 
 def test_a_point_names_the_states_of_its_key() -> None:
-    assert FakePoint(Key("p", Mode)).states == (Mode.OFF, Mode.ON)
-    assert FakePoint(Key("p", int)).states == ()
+    assert FakePoint(Key("p", Mode), poll_rate=PollRate.MEDIUM).states == (Mode.OFF, Mode.ON)
+    assert FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM).states == ()
 
 
 def test_labels_match_when_every_pair_is_present() -> None:
@@ -185,7 +196,7 @@ def test_empty_labels_select_nothing_and_are_refused() -> None:
 
 
 def _grouped() -> list[FakePoint[int]]:
-    return [FakePoint(Key(name, int), labels={"group": group}) for name, group in
+    return [FakePoint(Key(name, int), poll_rate=PollRate.MEDIUM, labels={"group": group}) for name, group in
             (("a", 1), ("b", 2), ("c", 1))]
 
 
@@ -224,7 +235,7 @@ def test_a_contradictory_refresh_is_refused(build: Callable[[], object], error: 
 
 
 def test_a_change_refresh_waits_not_at_all_unless_told() -> None:
-    point = FakePoint(Key("p", int), on_change=Refresh(["a"]))
+    point = FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM, on_change=Refresh(["a"]))
     assert point.on_change is not None and point.on_change.after == 0.0
 
 
@@ -268,13 +279,13 @@ def test_a_value_a_rounding_error_off_a_step_is_on_it() -> None:
 
 
 def test_a_write_range_comes_from_the_limits() -> None:
-    point = FakePoint(Key("p", float), can_write=True, limits=Limits(5, 35, 0.5))
+    point = FakePoint(Key("p", float), poll_rate=PollRate.MEDIUM, can_write=True, limits=Limits(5, 35, 0.5))
     assert point.write_range() == WriteRange(5, 35, 0.5)
 
 
 def test_a_whole_number_steps_by_one_and_a_float_by_nothing_unless_told() -> None:
-    assert FakePoint(Key("p", int), can_write=True, limits=Limits(0, 10)).write_range() == WriteRange(0, 10, 1)
-    assert FakePoint(Key("p", float), can_write=True, limits=Limits(0, 10)).write_range() == WriteRange(0, 10, None)
+    assert FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM, can_write=True, limits=Limits(0, 10)).write_range() == WriteRange(0, 10, 1)
+    assert FakePoint(Key("p", float), poll_rate=PollRate.MEDIUM, can_write=True, limits=Limits(0, 10)).write_range() == WriteRange(0, 10, None)
 
 
 @pytest.mark.parametrize("fields", [
@@ -285,7 +296,7 @@ def test_a_whole_number_steps_by_one_and_a_float_by_nothing_unless_told() -> Non
     {},
 ], ids=["no limits", "no max", "no min", "step only", "read only"])
 def test_a_point_without_both_ends_has_no_write_range(fields: dict[str, Any]) -> None:
-    assert FakePoint(Key("p", int), **fields).write_range() is None
+    assert FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM, **fields).write_range() is None
 
 
 @pytest.mark.parametrize("build", [
@@ -301,8 +312,8 @@ def test_a_contradictory_write_range_is_refused(build: Callable[[], object]) -> 
 
 
 def test_a_point_is_reported_until_it_says_otherwise() -> None:
-    assert FakePoint(Key("p", int)).certainty is Certainty.REPORTED
-    assert FakePoint(Key("p", int), certainty=Certainty.VERIFIED).certainty is Certainty.VERIFIED
+    assert FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM).certainty is Certainty.REPORTED
+    assert FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM, certainty=Certainty.VERIFIED).certainty is Certainty.VERIFIED
 
 
 def test_certainty_is_given_by_name() -> None:

@@ -1,17 +1,15 @@
 """Which keys are due for a read, and when: no I/O, no timer, no sleep."""
 from __future__ import annotations
 
-import logging
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from ._clock import Clock
-from ._point import DEFAULT_INTERVALS, Point, PollRate
+from ._point import Point, PollRate
 from ._value import DataValue, Quality, Value
-
-_LOGGER = logging.getLogger(__name__)
 
 GATHER_WITHIN = 1.0
 """Seconds ahead of its rhythm a key is read with others that are due, so that keys read together
@@ -44,36 +42,25 @@ class _Following:
 
 
 class Scheduler:
-    """The schedule of one device: poll intervals, overrides, pending refreshes, following.
+    """The schedule of one device: poll intervals, pending refreshes, following.
 
     Each key keeps its own rhythm: a read a refresh or a retry asked for does not move the next
     regular one. Whenever a key is due on its rhythm, the keys due within a second, at most a tenth
-    of their interval, are read with it, and take its rhythm. Whether, and when, a failed read is tried again is the protocol's to say, as it
-    alone knows what a failure means: it says so when it records the read.
+    of their interval, are read with it, and take its rhythm. Whether, and when, a failed read is
+    tried again is the protocol's to say, as it alone knows what a failure means: it says so when it
+    records the read.
     """
 
-    def __init__(self, clock: Clock, poll_intervals: Mapping[PollRate, float | None] = DEFAULT_INTERVALS,
-                 *, min_poll_interval: float = 0.0) -> None:
-        if min_poll_interval < 0:
-            raise ValueError(f"min_poll_interval cannot be negative, got {min_poll_interval}")
-        model_intervals: dict[PollRate, float | None] = {}
-        for poll_rate in PollRate:
-            default = poll_intervals.get(poll_rate, DEFAULT_INTERVALS[poll_rate])
-            if default is not None:
-                if not default > 0:
-                    raise ValueError(f"the model's default for {poll_rate.name} must be positive or "
-                                      f"None, got {default}")
-                if default < min_poll_interval:
-                    raise ValueError(f"the model's default for {poll_rate.name} ({default}s) is "
-                                      f"below the floor min_poll_interval={min_poll_interval}s - a model bug")
-            model_intervals[poll_rate] = default
+    def __init__(self, clock: Clock, poll_intervals: Mapping[PollRate, float]) -> None:
+        """Plan by `poll_intervals`, the seconds between reads of each poll rate a point is read at
+        on a timer.
 
+        Raises:
+            ValueError: an interval is not a finite number above 0, or one is given for
+                `PollRate.STATIC`, which is never read on a timer.
+        """
         self._clock = clock
-        self._min_poll_interval = min_poll_interval
-        self._model_intervals = model_intervals
-        self._rate_overrides: dict[PollRate, float] = {}
-        self._key_overrides: dict[str, float] = {}
-        self._warned: set[PollRate | str] = set()
+        self._intervals = checked_intervals(poll_intervals)
 
         self._scheduled = True
         self._points: dict[str, Point[Any]] = {}
@@ -90,18 +77,25 @@ class Scheduler:
     def set_points(self, points: Iterable[Point[Any]]) -> None:
         """Adopts the readable points of a (re)resolved model.
 
-        State for a key that persists is kept; a new key starts unpolled."""
+        State for a key that persists is kept; a new key starts unpolled.
+
+        Raises:
+            ValueError: naming every readable point whose poll rate has no interval.
+        """
         new_points: dict[str, Point[Any]] = {point.key: point for point in points if point.readable}
+        unplanned = [f"{key!r} ({point.poll_rate.name})" for key, point in new_points.items()
+                     if point.poll_rate is not None and point.poll_rate is not PollRate.STATIC
+                     and point.poll_rate not in self._intervals]
+        if unplanned:
+            raise ValueError("no interval for the poll rate of " + ", ".join(unplanned))
         for key in list(self._points):
             if key not in new_points:
                 self._polled.pop(key, None)
                 self._last_regular.pop(key, None)
-                self._key_overrides.pop(key, None)
                 self._pending.pop(key, None)
                 self._following.pop(key, None)
                 self._retry_at.pop(key, None)
                 self._failures.pop(key, None)
-                self._warned.discard(key)
         for key in new_points:
             if key not in self._points:
                 self._polled[key] = False
@@ -125,45 +119,23 @@ class Scheduler:
 
     # ----------------------------------------------------------------------------- intervals
 
-    def set_poll_interval(self, target: PollRate | str, seconds: float | None) -> float | None:
-        """Overrides the interval of a poll rate or a single key; returns the value actually stored,
-        clamped to the device floor. `None` removes the override."""
-        if isinstance(target, str):
-            self._require(target)
-        if seconds is not None:
-            if not seconds > 0:
-                raise ValueError(f"an interval must be positive or None, got {seconds}")
-            if seconds < self._min_poll_interval:
-                if target not in self._warned:
-                    _LOGGER.warning("interval %.3gs for %r is below the floor %.3gs; clamped",
-                                     seconds, target, self._min_poll_interval)
-                    self._warned.add(target)
-                seconds = self._min_poll_interval
-
-        if isinstance(target, PollRate):
-            if seconds is None:
-                self._rate_overrides.pop(target, None)
-            else:
-                self._rate_overrides[target] = seconds
-        else:
-            if seconds is None:
-                self._key_overrides.pop(target, None)
-            else:
-                self._key_overrides[target] = seconds
-        return seconds
-
     def interval(self, key: str) -> float | None:
-        """The effective interval: key override, else poll rate override, else model default."""
+        """Seconds between regular reads of `key`: its poll rate's; None for a key never read on a
+        timer."""
         self._require(key)
-        if key in self._key_overrides:
-            return self._key_overrides[key]
-        return self.rate_interval(self._points[key].poll_rate)
+        poll_rate = self._points[key].poll_rate
+        return None if poll_rate is None else self.rate_interval(poll_rate)
 
     def rate_interval(self, poll_rate: PollRate) -> float | None:
-        """The effective interval of a poll rate: its override, else the model default."""
-        if poll_rate in self._rate_overrides:
-            return self._rate_overrides[poll_rate]
-        return self._model_intervals[poll_rate]
+        """Seconds between reads at `poll_rate`; None for `PollRate.STATIC`, which is never read on
+        a timer.
+
+        Raises:
+            KeyError: `poll_rate` has no interval.
+        """
+        if poll_rate is PollRate.STATIC:
+            return None
+        return self._intervals[poll_rate]
 
     # ------------------------------------------------------------------------------ refresh
 
@@ -216,8 +188,7 @@ class Scheduler:
 
         Args:
             retry_after: seconds after which the protocol asks for `key` to be read again, sooner
-                than its rhythm would, though never sooner than `min_poll_interval`; None leaves
-                it to the rhythm, and ends one asked for before.
+                than its rhythm would; None leaves it to the rhythm, and ends one asked for before.
         """
         self._require(key)
         if retry_after is not None and not (math.isfinite(retry_after) and retry_after >= 0):
@@ -255,7 +226,7 @@ class Scheduler:
         if retry_after is None:
             self._retry_at.pop(key, None)
         else:
-            self._retry_at[key] = now + max(retry_after, self._min_poll_interval)
+            self._retry_at[key] = now + retry_after
 
     def _advance_following(self, key: str, value: DataValue[Any] | None, success: bool, now: float) -> None:
         following = self._following[key]
@@ -332,6 +303,24 @@ class Scheduler:
     def _require(self, key: str) -> None:
         if key not in self._points:
             raise KeyError(key)
+
+
+def checked_intervals(poll_intervals: Mapping[PollRate, float]) -> Mapping[PollRate, float]:
+    """A read-only copy of `poll_intervals`, once each is found to be an interval a rate can be
+    read at.
+
+    Raises:
+        ValueError: naming every interval that is not a finite number above 0, and
+            `PollRate.STATIC`, which is never read on a timer, if it is given one.
+    """
+    problems = [f"{poll_rate.name} is never read on a timer, and takes no interval"
+                for poll_rate in poll_intervals if poll_rate is PollRate.STATIC]
+    problems += [f"the interval of {poll_rate.name} must be a finite number above 0, got {seconds}"
+                 for poll_rate, seconds in poll_intervals.items()
+                 if poll_rate is not PollRate.STATIC and not (math.isfinite(seconds) and seconds > 0)]
+    if problems:
+        raise ValueError("; ".join(problems))
+    return MappingProxyType(dict(poll_intervals))
 
 
 def _merge(existing: _Pending | None, incoming: _Pending) -> _Pending:

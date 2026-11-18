@@ -60,11 +60,11 @@ def test_an_exponential_wait_grows_by_its_factor_up_to_its_max() -> None:
 
 
 @pytest.mark.parametrize("wait", [
-    Exponential(2.0, max=10.0),
+    Exponential(2.0, factor=2.0, max=10.0),
     Exponential(2, factor=2, max=10),
     Exponential(0.5, factor=3.0, max=0.5),
-    Steps(1, then=Exponential(2.0, max=10.0)),
-    Jitter(Exponential(2.0, max=10.0), rand=lambda: 1.0),
+    Steps(1, then=Exponential(2.0, factor=2.0, max=10.0)),
+    Jitter(Exponential(2.0, factor=2.0, max=10.0), spread=0.1, rand=lambda: 1.0),
 ])
 def test_a_wait_with_a_max_stays_at_it_however_many_tries_came_before(wait: Wait) -> None:
     capped = wait.delay(50)
@@ -72,17 +72,17 @@ def test_a_wait_with_a_max_stays_at_it_however_many_tries_came_before(wait: Wait
 
 
 def test_an_exponential_wait_without_a_max_grows_to_the_largest_float_and_no_further() -> None:
-    wait = Exponential(0.2)
+    wait = Exponential(0.2, factor=2.0, max=None)
     assert wait.delay(1025) == wait.delay(10 ** 6) == sys.float_info.max
 
 
 def test_an_exponential_wait_from_nothing_or_to_nothing_is_zero() -> None:
-    assert Exponential(0, max=10).delay(10 ** 6) == 0
-    assert Exponential(2, max=0).delay(10 ** 6) == 0
+    assert Exponential(0, factor=2.0, max=10).delay(10 ** 6) == 0
+    assert Exponential(2, factor=2.0, max=0).delay(10 ** 6) == 0
 
 
 def test_a_breaker_asks_again_at_its_max_after_hours_of_silence() -> None:
-    breaker = CircuitBreaker(after=3, retry=Retry(Exponential(2.0, max=10.0))).breaker()
+    breaker = CircuitBreaker(after=3, retry=Retry(Exponential(2.0, factor=2.0, max=10.0), None)).breaker()
     now = 0.0
     for _ in range(3):
         _unanswered(breaker, now)
@@ -97,7 +97,7 @@ def test_steps_are_taken_in_turn_then_the_last_again() -> None:
 
 
 def test_steps_go_on_with_another_wait_counted_from_its_start() -> None:
-    wait = Steps(0.5, then=Exponential(1, factor=2))
+    wait = Steps(0.5, then=Exponential(1, factor=2, max=None))
     assert [wait.delay(n) for n in (1, 2, 3, 4)] == [0.5, 1, 2, 4]
 
 
@@ -107,15 +107,15 @@ def test_jitter_spreads_a_wait_either_way_by_up_to_its_spread() -> None:
 
 
 def test_every_wait_is_a_wait() -> None:
-    waits: list[Wait] = [Fixed(1), Exponential(1), Steps(1), Jitter(Fixed(1))]
+    waits: list[Wait] = [Fixed(1), Exponential(1, factor=2.0, max=None), Steps(1), Jitter(Fixed(1), spread=0.1)]
     assert all(isinstance(wait, Wait) for wait in waits)
 
 
 @pytest.mark.parametrize("build", [
     lambda: Fixed(-1),
     lambda: Fixed(float("inf")),
-    lambda: Exponential(1, factor=0.5),
-    lambda: Exponential(1, max=float("nan")),
+    lambda: Exponential(1, factor=0.5, max=None),
+    lambda: Exponential(1, factor=2.0, max=float("nan")),
     lambda: Steps(),
     lambda: Steps(-1),
     lambda: Jitter(Fixed(1), spread=2),
@@ -158,7 +158,7 @@ def test_no_retry_tries_once() -> None:
 
 
 def test_a_retry_without_a_stop_never_gives_up() -> None:
-    retry = Retry(Fixed(5))
+    retry = Retry(Fixed(5), None)
     assert [retry.next_delay(n, 10.0 ** n) for n in (1, 10, 100)] == [5, 5, 5]
 
 
@@ -168,8 +168,21 @@ def test_a_retry_is_ready_unless_it_says_otherwise() -> None:
         async def ready(self) -> bool:
             return False
 
-    assert asyncio.run(Retry(Fixed(5)).ready())
-    assert not asyncio.run(Offline(Fixed(5)).ready())
+    assert asyncio.run(Retry(Fixed(5), None).ready())
+    assert not asyncio.run(Offline(Fixed(5), None).ready())
+
+
+@pytest.mark.parametrize(("part", "args", "fields"), [
+    (Exponential, (1,), {"max": None}),
+    (Exponential, (1,), {"factor": 2.0}),
+    (Exponential, (1, 2.0, None), {}),
+    (Jitter, (Fixed(1),), {}),
+    (Retry, (Fixed(1),), {}),
+])
+def test_a_wait_and_a_retry_say_every_number_they_go_by(part: Callable[..., object], args: tuple[Any, ...],
+                                                         fields: dict[str, Any]) -> None:
+    with pytest.raises(TypeError):
+        part(*args, **fields)
 
 
 # ========================================================================= circuit breaker
@@ -201,28 +214,28 @@ def test_a_breaker_lets_everything_through_while_the_device_answers() -> None:
 
 
 def test_a_breaker_opens_after_that_many_unanswered_in_a_row() -> None:
-    breaker = CircuitBreaker(after=3, retry=Retry(Fixed(60))).breaker()
+    breaker = CircuitBreaker(after=3, retry=Retry(Fixed(60), None)).breaker()
     for now in (0, 1, 2):
         _unanswered(breaker, now)
     assert breaker.is_open and not _allows(breaker, 30) and breaker.open_for(30) == 32
 
 
 def test_after_its_pause_a_breaker_lets_one_probe_through() -> None:
-    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10), None)).breaker()
     _unanswered(breaker, 0)
     assert _allows(breaker, 10)
     assert not _allows(breaker, 10), "a second request went through beside the probe"
 
 
 def test_an_answered_probe_closes_the_breaker() -> None:
-    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10), None)).breaker()
     _unanswered(breaker, 0)
     _answered(breaker, 10)
     assert not breaker.is_open and _allows(breaker, 10) and _allows(breaker, 10)
 
 
 def test_an_unanswered_probe_opens_the_breaker_again_for_a_growing_pause() -> None:
-    breaker = CircuitBreaker(after=3, retry=Retry(Exponential(10, factor=2))).breaker()
+    breaker = CircuitBreaker(after=3, retry=Retry(Exponential(10, factor=2, max=None), None)).breaker()
     for now in (0, 1, 2):
         _unanswered(breaker, now)
     assert breaker.open_for(2) == 10
@@ -247,7 +260,7 @@ def test_a_breaker_counts_the_unanswered_since_the_last_answer() -> None:
 
 
 def test_an_attempt_tells_the_breaker_its_outcome() -> None:
-    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10), None)).breaker()
     attempt = breaker.attempt(0)
     assert attempt is not None
     with attempt:
@@ -256,7 +269,7 @@ def test_an_attempt_tells_the_breaker_its_outcome() -> None:
 
 
 def test_a_probe_whose_outcome_is_never_told_is_released() -> None:
-    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10), None)).breaker()
     _unanswered(breaker, 0)
     with pytest.raises(KeyboardInterrupt):
         attempt = breaker.attempt(10)
@@ -272,7 +285,7 @@ def test_a_probe_whose_outcome_is_never_told_is_released() -> None:
 
 
 def test_a_request_let_through_a_closed_breaker_releases_no_probe() -> None:
-    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10))).breaker()
+    breaker = CircuitBreaker(after=1, retry=Retry(Fixed(10), None)).breaker()
     before = breaker.attempt(0)
     assert before is not None
     _unanswered(breaker, 0)
@@ -283,7 +296,7 @@ def test_a_request_let_through_a_closed_breaker_releases_no_probe() -> None:
 
 
 def test_each_pause_is_the_retry_s_next_delay_timed_from_the_first_opening() -> None:
-    breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2), Within(5))).breaker()
+    breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2, factor=2.0, max=None), Within(5))).breaker()
     _unanswered(breaker, 100)
     assert breaker.open_for(100) == 2
     _unanswered(breaker, 102)
@@ -293,7 +306,7 @@ def test_each_pause_is_the_retry_s_next_delay_timed_from_the_first_opening() -> 
 
 
 def test_attempts_in_a_breaker_s_retry_count_openings_so_n_give_n_minus_one_probes() -> None:
-    breaker = CircuitBreaker(after=3, retry=Retry(Exponential(2, max=10), Attempts(8))).breaker()
+    breaker = CircuitBreaker(after=3, retry=Retry(Exponential(2, factor=2.0, max=10), Attempts(8))).breaker()
     now, sent, probes = 0.0, 0, 0
     while not breaker.gave_up:
         now += breaker.open_for(now)
@@ -312,7 +325,7 @@ def test_a_breaker_whose_retry_gave_up_lets_nothing_through_until_reset() -> Non
 
 
 def test_a_reset_starts_the_retry_over() -> None:
-    breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2))).breaker()
+    breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2, factor=2.0, max=None), None)).breaker()
     _unanswered(breaker, 0)
     _unanswered(breaker, 2)
     breaker.reset()
@@ -321,7 +334,7 @@ def test_a_reset_starts_the_retry_over() -> None:
 
 
 def test_a_postponed_probe_waits_the_same_pause_again_without_counting_an_opening() -> None:
-    breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2))).breaker()
+    breaker = CircuitBreaker(after=1, retry=Retry(Exponential(2, factor=2.0, max=None), None)).breaker()
     _unanswered(breaker, 0)
     _unanswered(breaker, 2)
     assert _allows(breaker, 6)

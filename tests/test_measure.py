@@ -1,6 +1,8 @@
 """What a measurement of a device's timing says."""
 from __future__ import annotations
 
+import pytest
+
 from event_connect.testing import Latency, Settling, recommended_refresh
 
 
@@ -30,9 +32,20 @@ def test_a_value_still_changing_has_not_settled() -> None:
 def test_the_recommended_refresh_reads_when_the_slowest_has_settled_and_allows_twice_as_long() -> None:
     fast = Settling("a", ((0.5, 1), (1.0, 1), (1.5, 1)), 0)
     slow = Settling("b", ((0.5, 1), (1.0, 5), (2.2, 9), (2.7, 9)), 0)
-    assert recommended_refresh((fast, slow), every=0.5) == (2.5, 5)
+    assert recommended_refresh((fast, slow), every=0.5, margin=2) == (2.5, 5)
 
 
 def test_nothing_is_recommended_when_a_change_did_not_settle() -> None:
-    assert recommended_refresh((Settling("a", ((0.5, 1), (1.0, 5)), 0),), every=0.5) is None
-    assert recommended_refresh((), every=0.5) is None
+    assert recommended_refresh((Settling("a", ((0.5, 1), (1.0, 5)), 0),), every=0.5, margin=2) is None
+    assert recommended_refresh((), every=0.5, margin=2) is None
+
+
+def test_the_recommended_refresh_allows_for_the_margin_it_is_given() -> None:
+    slow = Settling("b", ((0.5, 1), (1.0, 5), (2.2, 9), (2.7, 9)), 0)
+    assert recommended_refresh((slow,), every=0.5, margin=1) == (2.5, 3)
+    assert recommended_refresh((slow,), every=0.5, margin=3) == (2.5, 7.5)
+
+
+def test_a_margin_that_allows_less_than_was_measured_is_refused() -> None:
+    with pytest.raises(ValueError):
+        recommended_refresh((), every=0.5, margin=0.5)
