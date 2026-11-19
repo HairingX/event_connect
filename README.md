@@ -255,6 +255,8 @@ A `Point[T]` describes how one value behaves:
 - `labels`: tags that a `Refresh` can select points by.
 - `certainty`: how certain it is that the point is what it says; `REPORTED` until it has been
   read on a unit.
+- `candidate`: set, as a `Candidate`, on a point used only at the Test level; see
+  [Levels and candidates](#levels-and-candidates).
 
 `write_range()` gives the values a point can be written with, as a `WriteRange(min, max, step)`:
 from its `limits`, or None without a minimum and a maximum. A protocol's point overrides it where
@@ -264,6 +266,47 @@ A point validates itself when it is created, and raises one error that lists eve
 inconsistency. Your subclass adds where the value is stored. It overrides `readable` and
 `writable` to say which directions it supports, and `problems()` to add its protocol's own
 checks.
+
+### Levels and candidates
+
+A consumer chooses how certain a point must be to be used, as a `Level`:
+
+| Level | Uses |
+|---|---|
+| `VERIFIED` | points read on a unit of the model |
+| `DOCUMENTED` | those, and points stated in the model's documentation |
+| `TEST` | every point, whatever its certainty, and each candidate in place of the point it replaces |
+
+A *candidate* is the next guess at a point: a point used only at `TEST`, marked
+`candidate=Candidate()`. With `Candidate(replaces=key)`, it takes the place of the point of that
+key, which `TEST` then leaves out; below `TEST`, the candidate is left out and that point is used.
+A candidate may replace a point of its own key, to read the key from another place: a consumer
+that stores the key keeps it. Once a candidate has been read on a unit, it becomes an ordinary
+point, and the point it replaced is removed.
+
+`points_at(points, level)` gives the points a level uses, in the order given.
+`candidates_in_place(points, level)` gives the same points before their certainty is weighed,
+for a client that still reads a point the level leaves out, such as one it needs to find out
+what the unit has. A level is stored by its text, `Level("documented")`.
+
+```python
+from event_connect import Candidate, Certainty, Key, Level, PollRate, points_at
+from event_connect.testing import FakePoint
+
+REHEAT = Key("reheat", bool)
+COIL = Key("coil", int)
+points = [
+    FakePoint(REHEAT, poll_rate=PollRate.SLOW, certainty=Certainty.VERIFIED),
+    FakePoint(COIL, poll_rate=PollRate.SLOW, candidate=Candidate(replaces=REHEAT)),
+    FakePoint(Key("guess", int), poll_rate=PollRate.SLOW, certainty=Certainty.INFERRED),
+]
+assert [point.key for point in points_at(points, Level.VERIFIED)] == ["reheat"]
+assert [point.key for point in points_at(points, Level.DOCUMENTED)] == ["reheat"]
+assert [point.key for point in points_at(points, Level.TEST)] == ["coil", "guess"]
+```
+
+Which key a candidate names, and that it names a point of the same model, is for the protocol
+package to check: a point knows nothing of the others.
 
 ### Follow-up reads
 
@@ -452,6 +495,12 @@ Everything is imported from `event_connect`, and test support from `event_connec
 - `WriteRange`: the values a point can be written with, from `Point.write_range()`.
 - `Transform`, `Transforms`: conversions between the device's value and the value shown.
 - `Certainty`: how certain it is that a point is what it says, as its `certainty` field.
+- `Candidate`: what makes a point a candidate, as its `candidate` field, and the key it replaces.
+
+**Levels**
+- `Level`: how certain a point must be to be used, and whether candidates are tried.
+- `points_at()`: the points a level uses. `candidates_in_place()`: the same, before their
+  certainty is weighed.
 - `VALUE_TYPES`, `is_instance()`: the types a value may have, and a check for one.
 
 **Values**

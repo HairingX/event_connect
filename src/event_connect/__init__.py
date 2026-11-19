@@ -22,8 +22,10 @@ from ._errors import (
 from ._events import Subscriber, Subscriptions, ValueCallback, changed, should_poll, tell
 from ._identity import Identity
 from ._key import Key, is_key, is_state_type
+from ._level import Level, candidates_in_place, points_at
 from ._point import (
     VALUE_TYPES,
+    Candidate,
     Change,
     Labels,
     Limits,
@@ -75,6 +77,7 @@ __all__ = [
     "AuthenticationError",
     "Breaker",
     "CannotConnectError",
+    "Candidate",
     "Certainty",
     "Change",
     "CircuitBreaker",
@@ -89,6 +92,7 @@ __all__ = [
     "Jitter",
     "Key",
     "Labels",
+    "Level",
     "Limits",
     "ModelError",
     "ModelInfo",
@@ -125,10 +129,12 @@ __all__ = [
     "Write",
     "WriteKind",
     "WriteRange",
+    "candidates_in_place",
     "changed",
     "is_instance",
     "is_key",
     "is_state_type",
+    "points_at",
     "select",
     "selector",
     "should_poll",
