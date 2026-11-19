@@ -21,3 +21,13 @@ def test_a_readme_example_runs(example: str, monkeypatch: pytest.MonkeyPatch) ->
     module = types.ModuleType("readme_example")
     monkeypatch.setitem(sys.modules, module.__name__, module)
     exec(compile(example, str(README), "exec"), module.__dict__)
+
+
+def _overview_group(title: str) -> set[str]:
+    """Every name the API overview gives under `title`."""
+    group = README.read_text(encoding="utf-8").split(f"**{title}**\n", 1)[1].split("\n\n", 1)[0]
+    return set(re.findall(r"`(\w+)(?:\(\))?(?:\[\w+\])?`", group))
+
+
+def test_the_api_overview_lists_under_levels_only_what_levels_are_made_of() -> None:
+    assert _overview_group("Levels") == {"Level", "points_at", "candidates_in_place"}

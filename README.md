@@ -496,12 +496,12 @@ Everything is imported from `event_connect`, and test support from `event_connec
 - `Transform`, `Transforms`: conversions between the device's value and the value shown.
 - `Certainty`: how certain it is that a point is what it says, as its `certainty` field.
 - `Candidate`: what makes a point a candidate, as its `candidate` field, and the key it replaces.
+- `VALUE_TYPES`, `is_instance()`: the types a value may have, and a check for one.
 
 **Levels**
 - `Level`: how certain a point must be to be used, and whether candidates are tried.
 - `points_at()`: the points a level uses. `candidates_in_place()`: the same, before their
   certainty is weighed.
-- `VALUE_TYPES`, `is_instance()`: the types a value may have, and a check for one.
 
 **Values**
 - `DataValue[T]`: a value with its `Quality`, the time it was read, and the raw reply.
