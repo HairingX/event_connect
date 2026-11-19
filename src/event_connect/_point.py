@@ -219,6 +219,15 @@ class Refresh:
             raise ValueError("until_stable needs a positive after to re-read at")
 
 
+@dataclass(frozen=True)
+class Candidate:
+    """What makes a point a candidate: a point used only at the Test level, where it takes the
+    place of the point it replaces."""
+    replaces: Key[Any] | None = None
+    """The key of the point it takes the place of; None for a point that replaces none. It may be
+    its own key, to read a key from another place."""
+
+
 # ================================================================================== point
 
 
@@ -252,6 +261,8 @@ class Point[T]:
     certainty: Certainty = Certainty.REPORTED
     """How certain it is that the point is what it says; REPORTED until it has been read on a
     unit."""
+    candidate: Candidate | None = None
+    """Set for a point used only at the Test level; None for every other point."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "labels", MappingProxyType(dict(self.labels)))
@@ -312,6 +323,9 @@ def _shape_problems(point: Point[Any]) -> list[str]:
         found.append("it needs a read side, a write side, or both")
     if any(not name for name in point.labels):
         found.append("a label needs a name")
+    replaces = point.candidate.replaces if point.candidate is not None else None
+    if replaces is not None and (not is_key(replaces) or not replaces or replaces != replaces.strip()):
+        found.append(f"a candidate replaces a point by its Key, not {replaces!r}")
     return found
 
 
