@@ -65,7 +65,7 @@ from ._status import Status, StatusBoard, StatusCallback
 from ._timing import Timing
 from ._unit import Unit
 from ._value import DataValue, Quality, Value, stale
-from ._writes import Write
+from ._writes import Write, WriteLog, WriteOutcome, WriteRecord
 
 __version__ = _installed_version("event_connect")
 __all__ = [
@@ -128,7 +128,10 @@ __all__ = [
     "Within",
     "Write",
     "WriteKind",
+    "WriteLog",
+    "WriteOutcome",
     "WriteRange",
+    "WriteRecord",
     "candidates_in_place",
     "changed",
     "is_instance",
