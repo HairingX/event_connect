@@ -237,7 +237,9 @@ A real client also:
   and again whenever a subscriber comes or leaves or a consumer asks for a point;
 - holds `Status.WRITE_PENDING` with `StatusBoard.holding()` while a write is in flight, so that
   overlapping writes show as one;
-- passes `retry_after` to `record()` when its protocol wants a failed read retried sooner.
+- passes `retry_after` to `record()` when its protocol wants a failed read retried sooner;
+- records every write it sends, and every read, in a `WriteLog`, and gives its `diagnostics()`
+  as the `writes` of its own.
 
 ## How it works
 
@@ -407,6 +409,48 @@ which also turns `Status.CONNECTED` False; `points`, `model` and `seconds_until_
 until the first `connect()`; `value(key)` is None for a key the device has no value for; and
 `subscribe(key)` raises `KeyError` for a key no model of the client has.
 
+### Recording writes
+
+A `WriteLog` keeps the latest writes sent to each point, so that a report from a user shows
+whether a write reached the device without anyone describing it. Tell it each write as it is sent,
+each sending again, and how it ended; tell it every read, and the first one the device answers
+after a write has ended becomes that write's read-back. It keeps as many writes per point as the
+client states.
+
+```python
+from event_connect import DataValue, Key, Quality, WriteLog, WriteOutcome
+from event_connect.testing import FakeClock
+
+TARGET = Key("target", float)
+clock = FakeClock()
+log = WriteLog(clock, per_key=5)
+
+record = log.sent(TARGET, 21.5, raw=[215])  # PENDING, one attempt
+log.resent(record)                          # the device was busy; sent again
+log.ended(record, WriteOutcome.TAKEN)
+clock.advance(1)
+log.read(TARGET, DataValue(21.5, Quality.GOOD, clock.now(), raw=(215,)))
+
+[written] = log.records(TARGET)
+assert (written.attempts, written.outcome, written.read_back.value) == (2, WriteOutcome.TAKEN, 21.5)
+assert log.diagnostics()["target"][0]["read_back"]["at"] == "2026-01-01T00:00:01+00:00"
+```
+
+Each `WriteRecord` holds the value asked for, the `raw` sent, when it was first sent and how many
+times, its `WriteOutcome` with the device's answer in `detail`, when it ended, and its
+`read_back`. Only what is sent is recorded: a value refused before sending is not. A
+`WriteOutcome` is one of:
+
+| Outcome | Meaning |
+|---|---|
+| `PENDING` | sent, and not yet ended |
+| `TAKEN` | the device answered that it took the value |
+| `SENT` | sent where the protocol gives no answer: taken as far as anyone can tell |
+| `REFUSED` | the device answered, and did not take it; `detail` says how |
+| `NO_ANSWER` | the device did not answer |
+| `OVERTAKEN` | a newer value for the point took its place, and it was not sent again |
+| `ERROR` | anything else, such as an answer that could not be read |
+
 ### Retry policies
 
 These objects only make decisions; your protocol code asks them and acts:
@@ -529,6 +573,8 @@ Everything is imported from `event_connect`, and test support from `event_connec
 
 **Writes**
 - `Write[T]`: one write of a sequence.
+- `WriteLog`, `WriteRecord`, `WriteOutcome`: the latest writes sent to each point, how each
+  ended, and the read that came after it.
 
 **Clients**
 - `DeviceClient`: what every client of a device offers, whatever its protocol.
