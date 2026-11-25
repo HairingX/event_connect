@@ -3,28 +3,28 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import NamedTuple
 
 
 @dataclass(frozen=True)
 class Area:
-    """A run of `count` registers of one table from number `start`, read as raw numbers.
+    """A run of `count` registers of one address space from number `start`, read as raw numbers.
 
-    `table` is the protocol's own name for an address space, such as "input", "holding",
+    `space` is the protocol's own name for the address space, such as "input", "holding",
     "datapoint" or "setpoint"; the numbers are those the device's model gives its points.
 
     Raises:
-        ValueError: the table is empty, `start` is negative, or `count` is below 1.
+        ValueError: the space is empty, `start` is negative, or `count` is below 1.
     """
-    table: str
+    space: str
     start: int
     count: int
 
     def __post_init__(self) -> None:
-        if not self.table:
-            raise ValueError("an area's table must not be empty")
+        if not self.space:
+            raise ValueError("an area's space must not be empty")
         if self.start < 0:
             raise ValueError(f"an area cannot start below 0, got {self.start}")
         if self.count < 1:
@@ -37,19 +37,19 @@ class Area:
 
     def addresses(self) -> tuple[RawAddress, ...]:
         """Every register of the area, in order."""
-        return tuple(RawAddress(self.table, number) for number in range(self.start, self.end))
+        return tuple(RawAddress(self.space, number) for number in range(self.start, self.end))
 
     def __str__(self) -> str:
-        return f"{self.table} {self.start}-{self.end - 1}" if self.count > 1 else f"{self.table} {self.start}"
+        return f"{self.space} {self.start}-{self.end - 1}" if self.count > 1 else f"{self.space} {self.start}"
 
 
 class RawAddress(NamedTuple):
-    """One register: its table, as an `Area` names it, and its number."""
-    table: str
+    """One register: its address space, as an `Area` names it, and its number."""
+    space: str
     number: int
 
     def __str__(self) -> str:
-        return f"{self.table} {self.number}"
+        return f"{self.space} {self.number}"
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,8 @@ class Snapshot:
     addresses it said it has none at.
 
     Raises:
-        ValueError: an address is both read and missing, or a word is outside 0-65535.
+        ValueError: `taken_at` is not timezone-aware UTC, an address is both read and missing, or
+            a word is outside 0-65535.
     """
     taken_at: datetime
     """When the read ended - timezone-aware UTC."""
@@ -68,6 +69,8 @@ class Snapshot:
     """The addresses the device said it has none at."""
 
     def __init__(self, taken_at: datetime, values: Mapping[RawAddress, int], missing: Iterable[RawAddress]) -> None:
+        if taken_at.utcoffset() != timedelta(0):
+            raise ValueError(f"taken_at must be timezone-aware UTC, got {taken_at.isoformat()}")
         object.__setattr__(self, "taken_at", taken_at)
         object.__setattr__(self, "values", MappingProxyType(dict(values)))
         object.__setattr__(self, "missing", frozenset(missing))
@@ -79,14 +82,14 @@ class Snapshot:
             raise ValueError(f"words outside 0-65535 at {', '.join(map(str, outside))}")
 
     def as_plain(self) -> dict[str, object]:
-        """The snapshot as plain data: the time in ISO 8601; by table, each word by its number's
+        """The snapshot as plain data: the time in ISO 8601; by space, each word by its number's
         text, and the missing numbers in order."""
         values: dict[str, dict[str, int]] = {}
         for address, word in sorted(self.values.items()):
-            values.setdefault(address.table, {})[str(address.number)] = word
+            values.setdefault(address.space, {})[str(address.number)] = word
         missing: dict[str, list[int]] = {}
         for address in sorted(self.missing):
-            missing.setdefault(address.table, []).append(address.number)
+            missing.setdefault(address.space, []).append(address.number)
         return {"taken_at": self.taken_at.isoformat(), "values": values, "missing": missing}
 
 
@@ -101,13 +104,13 @@ class RegisterChange:
 
     def as_plain(self) -> dict[str, object]:
         """The change as plain data."""
-        return {"table": self.address.table, "number": self.address.number, "before": self.before,
+        return {"space": self.address.space, "number": self.address.number, "before": self.before,
                 "after": self.after, "bits": list(self.bits)}
 
 
 def difference(before: Snapshot, after: Snapshot) -> tuple[RegisterChange, ...]:
     """Every register both snapshots read, as a word or as missing, that differs between them;
-    ordered by table, then number."""
+    ordered by space, then number."""
     read_before = before.missing.union(before.values)
     changes: list[RegisterChange] = []
     for address in sorted(after.missing.union(after.values).intersection(read_before)):
@@ -122,4 +125,3 @@ def _flipped(before: int | None, after: int | None) -> tuple[int, ...]:
         return ()
     differ = before ^ after
     return tuple(bit for bit in range(differ.bit_length()) if differ >> bit & 1)
-

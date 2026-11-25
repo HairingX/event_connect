@@ -454,7 +454,7 @@ times, its `WriteOutcome` with the device's answer in `detail`, when it ended, a
 ### Snapshots of areas
 
 To find out what a device's registers mean, a protocol package reads whole `Area`s of them -
-runs of registers of one table, such as "datapoint" 0-99 - as raw words, while the user changes
+runs of registers of one address space, such as "datapoint" 0-99 - as raw words, while the user changes
 one thing at a time on the device's own panel. A `Snapshot` holds what one read found: the word
 at each `RawAddress`, and the addresses the device said it has none at. `difference()` gives
 every register that changed between two, with the bits that flipped.
@@ -606,7 +606,7 @@ Everything is imported from `event_connect`, and test support from `event_connec
   ended, and the read that came after it.
 
 **Snapshots of areas**
-- `Area`, `RawAddress`: a run of registers of one table, and one register.
+- `Area`, `RawAddress`: a run of registers of one address space, and one register.
 - `Snapshot`, `RegisterChange`, `difference()`: the raw words one read of areas found, and what
   changed between two reads.
 
