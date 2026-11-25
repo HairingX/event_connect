@@ -6,6 +6,7 @@ on these. Support for tests and for measuring a device's timing is in `event_con
 """
 from importlib.metadata import version as _installed_version
 
+from ._areas import Area, RawAddress, RegisterChange, Snapshot, difference
 from ._certainty import Certainty
 from ._client import DeviceClient, ModelInfo, PointsCallback
 from ._clock import Clock, SystemClock
@@ -72,6 +73,7 @@ __all__ = [
     "NO_RETRY",
     "VALUE_TYPES",
     "AnyOf",
+    "Area",
     "Attempt",
     "Attempts",
     "AuthenticationError",
@@ -103,12 +105,15 @@ __all__ = [
     "PollRate",
     "Pulse",
     "Quality",
+    "RawAddress",
     "Reachability",
     "ReadOnlyError",
     "Refresh",
+    "RegisterChange",
     "Retry",
     "Scheduler",
     "Selector",
+    "Snapshot",
     "Status",
     "StatusBoard",
     "StatusCallback",
@@ -134,6 +139,7 @@ __all__ = [
     "WriteRecord",
     "candidates_in_place",
     "changed",
+    "difference",
     "is_instance",
     "is_key",
     "is_state_type",

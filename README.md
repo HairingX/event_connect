@@ -451,6 +451,35 @@ times, its `WriteOutcome` with the device's answer in `detail`, when it ended, a
 | `OVERTAKEN` | a newer value for the point took its place, and it was not sent again |
 | `ERROR` | anything else, such as an answer that could not be read |
 
+### Snapshots of areas
+
+To find out what a device's registers mean, a protocol package reads whole `Area`s of them -
+runs of registers of one table, such as "datapoint" 0-99 - as raw words, while the user changes
+one thing at a time on the device's own panel. A `Snapshot` holds what one read found: the word
+at each `RawAddress`, and the addresses the device said it has none at. `difference()` gives
+every register that changed between two, with the bits that flipped.
+
+```python
+from datetime import datetime, timezone
+
+from event_connect import Area, RawAddress, RegisterChange, Snapshot, difference
+
+area = Area("datapoint", 20, 3)
+assert [str(address) for address in area.addresses()] == ["datapoint 20", "datapoint 21", "datapoint 22"]
+
+at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+before = Snapshot(at, {RawAddress("datapoint", 20): 0, RawAddress("datapoint", 21): 215},
+                  missing=[RawAddress("datapoint", 22)])
+after = Snapshot(at, {RawAddress("datapoint", 20): 1, RawAddress("datapoint", 21): 215},
+                 missing=[RawAddress("datapoint", 22)])
+assert difference(before, after) == (RegisterChange(RawAddress("datapoint", 20), 0, 1, bits=(0,)),)
+assert after.as_plain()["values"] == {"datapoint": {"20": 1, "21": 215}}
+```
+
+A register only one of the two read is no change; one the device had and now has none at, or
+the other way round, is one, without bits. `as_plain()` gives a snapshot and a change as plain
+data, for diagnostics and storage.
+
 ### Retry policies
 
 These objects only make decisions; your protocol code asks them and acts:
@@ -575,6 +604,11 @@ Everything is imported from `event_connect`, and test support from `event_connec
 - `Write[T]`: one write of a sequence.
 - `WriteLog`, `WriteRecord`, `WriteOutcome`: the latest writes sent to each point, how each
   ended, and the read that came after it.
+
+**Snapshots of areas**
+- `Area`, `RawAddress`: a run of registers of one table, and one register.
+- `Snapshot`, `RegisterChange`, `difference()`: the raw words one read of areas found, and what
+  changed between two reads.
 
 **Clients**
 - `DeviceClient`: what every client of a device offers, whatever its protocol.
