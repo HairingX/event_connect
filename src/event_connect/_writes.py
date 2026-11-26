@@ -52,6 +52,10 @@ class WriteRecord:
     """The value asked for."""
     raw: tuple[int, ...]
     """What was sent, in wire order, as the protocol counts it: registers, bits or bytes."""
+    secret: bool = False
+    """Whether the point is a credential: then `value` is None, `raw` is empty and `read_back`
+    stays None, so the record says only that the write was sent, when, how often and how it
+    ended."""
     sent_at: datetime
     """When it was first sent - timezone-aware UTC."""
     attempts: int
@@ -93,7 +97,8 @@ class WriteLog:
     after it, so that a write can be shown to have reached the device.
 
     Only what is sent is recorded: a value refused before sending, or overtaken before it was
-    first sent, is not.
+    first sent, is not. Of a write to a secret point, neither the value, nor what was sent, nor
+    what was read after it is kept.
     """
 
     def __init__(self, clock: Clock, *, per_key: int) -> None:
@@ -109,11 +114,17 @@ class WriteLog:
         self._records: dict[str, deque[WriteRecord]] = {}
         self._count = 0
 
-    def sent(self, key: str, value: object, raw: Sequence[int]) -> WriteRecord:
+    def sent(self, key: str, value: object, raw: Sequence[int], *, secret: bool = False) -> WriteRecord:
         """Record `value` sent to `key` as `raw`, now, once and `PENDING`; the oldest record of
-        `key` gives way once it has `per_key`."""
+        `key` gives way once it has `per_key`.
+
+        Args:
+            secret: `key` is a credential: the record keeps neither `value` nor `raw`, and
+                takes no read-back.
+        """
         self._count += 1
-        record = WriteRecord(key=key, number=self._count, value=value, raw=tuple(raw),
+        record = WriteRecord(key=key, number=self._count, value=None if secret else value,
+                             raw=() if secret else tuple(raw), secret=secret,
                              sent_at=self._clock.now(), attempts=1, outcome=WriteOutcome.PENDING,
                              detail="", ended_at=None, read_back=None)
         self._records.setdefault(key, deque(maxlen=self._per_key)).append(record)
@@ -145,7 +156,8 @@ class WriteLog:
         return self._update(record, lambda current: replace(current, outcome=outcome, detail=detail, ended_at=now))
 
     def read(self, key: str, value: DataValue[Any]) -> None:
-        """Note a read of `key`: the read-back of its latest write, if that has ended and has none.
+        """Note a read of `key`: the read-back of its latest write, if that has ended, has none,
+        and is not secret.
 
         A read the device did not answer, which is `STALE`, is no read-back.
         """
@@ -153,7 +165,7 @@ class WriteLog:
         if not records or value.quality is Quality.STALE:
             return
         latest = records[-1]
-        if latest.outcome is not WriteOutcome.PENDING and latest.read_back is None:
+        if latest.outcome is not WriteOutcome.PENDING and latest.read_back is None and not latest.secret:
             records[-1] = replace(latest, read_back=value)
 
     def records(self, key: str) -> tuple[WriteRecord, ...]:

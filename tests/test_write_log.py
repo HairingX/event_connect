@@ -180,5 +180,51 @@ def test_a_value_in_the_diagnostics_is_plain(value: object, plain: object) -> No
     assert log.diagnostics()["any"][0]["value"] == plain
 
 
+PASSWORD = Key("password", int)
+
+
+def test_a_secret_write_keeps_neither_its_value_nor_what_was_sent() -> None:
+    log, _ = _log()
+    record = log.sent(PASSWORD, 4321, [4321], secret=True)
+    assert record == WriteRecord(key="password", number=1, value=None, raw=(), secret=True, sent_at=START,
+                                 attempts=1, outcome=WriteOutcome.PENDING, detail="", ended_at=None,
+                                 read_back=None)
+
+
+def test_a_secret_write_counts_its_attempts_and_ends_as_any_other() -> None:
+    log, clock = _log()
+    record = log.sent(PASSWORD, 4321, [4321], secret=True)
+    log.resent(record)
+    clock.advance(1)
+    ended = log.ended(record, WriteOutcome.TAKEN)
+    assert (ended.attempts, ended.outcome, ended.ended_at, ended.secret) == (2, WriteOutcome.TAKEN, clock.now(), True)
+    assert log.records(PASSWORD) == (ended,)
+
+
+def test_a_read_after_a_secret_write_is_no_read_back() -> None:
+    log, clock = _log()
+    log.ended(log.sent(PASSWORD, 4321, [4321], secret=True), WriteOutcome.TAKEN)
+    log.read(PASSWORD, DataValue(4321, Quality.GOOD, clock.now(), raw=(4321,)))
+    assert log.records(PASSWORD)[0].read_back is None
+
+
+def test_the_diagnostics_of_a_secret_write_hold_no_trace_of_its_value() -> None:
+    log, clock = _log()
+    record = log.sent(PASSWORD, 4321, [4321], secret=True)
+    clock.advance(1)
+    log.ended(record, WriteOutcome.TAKEN)
+    log.read(PASSWORD, DataValue(4321, Quality.GOOD, clock.now(), raw=(4321,)))
+    assert log.diagnostics() == {"password": [{
+        "number": 1, "value": None, "raw": [], "sent_at": "2026-01-01T00:00:00+00:00", "attempts": 1,
+        "outcome": "taken", "detail": "", "ended_at": "2026-01-01T00:00:01+00:00", "read_back": None,
+    }]}
+    assert "4321" not in repr(log.diagnostics())
+
+
+def test_a_write_is_not_secret_unless_told() -> None:
+    log, _ = _log()
+    assert log.sent(TARGET, 21.5, [215]).secret is False
+
+
 def test_an_outcome_is_stored_by_its_text() -> None:
     assert WriteOutcome("no_answer") is WriteOutcome.NO_ANSWER

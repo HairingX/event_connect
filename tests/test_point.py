@@ -308,6 +308,14 @@ def test_a_contradictory_write_range_is_refused(build: Callable[[], object]) -> 
         build()
 
 
+# ================================================================================= secret
+
+
+def test_a_point_is_secret_only_when_marked() -> None:
+    assert FakePoint(Key("p", int), poll_rate=PollRate.MEDIUM).secret is False
+    assert FakePoint(Key("p", int), can_read=False, can_write=True, secret=True).secret is True
+
+
 # ============================================================================== certainty
 
 

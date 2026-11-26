@@ -263,6 +263,9 @@ class Point[T]:
     unit."""
     candidate: Candidate | None = None
     """Set for a point used only at the Test level; None for every other point."""
+    secret: bool = False
+    """Whether the value is a credential, such as a password, that no record of what is sent to
+    or read from the device may keep."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "labels", MappingProxyType(dict(self.labels)))

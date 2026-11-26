@@ -238,8 +238,8 @@ A real client also:
 - holds `Status.WRITE_PENDING` with `StatusBoard.holding()` while a write is in flight, so that
   overlapping writes show as one;
 - passes `retry_after` to `record()` when its protocol wants a failed read retried sooner;
-- records every write it sends, and every read, in a `WriteLog`, and gives its `diagnostics()`
-  as the `writes` of its own.
+- records every write it sends, and every read, in a `WriteLog`, a write to a secret point with
+  `secret=True`, and gives its `diagnostics()` as the `writes` of its own.
 
 ## How it works
 
@@ -259,6 +259,8 @@ A `Point[T]` describes how one value behaves:
   read on a unit.
 - `candidate`: set, as a `Candidate`, on a point used only at the Test level; see
   [Levels and candidates](#levels-and-candidates).
+- `secret`: the value is a credential, such as a password, that no record of what is sent to or
+  read from the device may keep; see [Recording writes](#recording-writes).
 
 `write_range()` gives the values a point can be written with, as a `WriteRange(min, max, step)`:
 from its `limits`, or None without a minimum and a maximum. A protocol's point overrides it where
@@ -438,8 +440,10 @@ assert log.diagnostics()["target"][0]["read_back"]["at"] == "2026-01-01T00:00:01
 
 Each `WriteRecord` holds the value asked for, the `raw` sent, when it was first sent and how many
 times, its `WriteOutcome` with the device's answer in `detail`, when it ended, and its
-`read_back`. Only what is sent is recorded: a value refused before sending is not. A
-`WriteOutcome` is one of:
+`read_back`. Only what is sent is recorded: a value refused before sending is not. Of a write to
+a secret point, sent with `secret=True`, the record keeps only that it was sent, when, how often
+and how it ended: its `value` is None, its `raw` empty, it takes no read-back, and its `secret`
+is True. A `WriteOutcome` is one of:
 
 | Outcome | Meaning |
 |---|---|
